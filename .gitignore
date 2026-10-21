@@ -1,0 +1,33 @@
+# Binaries and build artifacts
+bin/
+src/
+.tools/
+*.tgz
+tmp/
+.dev_builds/
+dev_releases/
+.final_builds/
+.blobs/
+
+# Test, vendor, and coverage artifacts
+vendor/
+coverage/
+/testlist
+
+# Backups and temporary files
+*.orig
+*.sw[pq]
+.DS_Store
+
+# Editor and IDE paraphernalia
+.idea/
+.vscode/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# Ignore Terraform state files
+*.tfvars
+*.terraform/
+*.terraform.lock.hcl

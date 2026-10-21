@@ -1,0 +1,27 @@
+# See the OWNERS docs at https://go.k8s.io/owners
+
+aliases:
+  bosh-gdc-cpi-release-google-reviewers:
+  - ajlfleos
+  - sanjay-nagarur
+  - dilipkumar2k6
+  - daniel-sarran
+  - cmuuss
+  - ahsanasardar
+  bosh-gdc-cpi-release-sap-reviewers:
+  - a-hassanin
+  - neddp
+  - gowrisankar22
+  - ivaylogi98
+  bosh-gdc-cpi-release-google-approvers:
+  - ajlfleos
+  - sanjay-nagarur
+  - dilipkumar2k6
+  - daniel-sarran
+  - cmuuss
+  - ahsanasardar
+  bosh-gdc-cpi-release-sap-approvers:
+  - a-hassanin
+  - neddp
+  - gowrisankar22
+  - ivaylogi98
