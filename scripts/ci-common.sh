@@ -1,0 +1,574 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Google LLC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# is_authorized_maintainer checks whether a GitHub user is an authorized
+# maintainer (either via repository author_association or OWNERS_ALIASES/CODEOWNERS
+# read strictly from origin/main).
+is_authorized_maintainer() {
+  local actor="$1"
+  local assoc="${2:-}"
+
+  if [[ -z "${actor}" ]]; then
+    return 1
+  fi
+
+  local actor_lc actor_base_lc owners_list="" owners_ref="HEAD"
+  actor_lc=$(printf '%s' "${actor}" | tr '[:upper:]' '[:lower:]')
+  actor_base_lc="${actor_lc%\[bot\]}"
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    owners_ref="origin/main"
+  fi
+
+  local owners_aliases_content codeowners_content
+  owners_aliases_content=$(git show "${owners_ref}:OWNERS_ALIASES" 2>/dev/null || true)
+  if [[ -n "${owners_aliases_content}" ]]; then
+    owners_list+=$(printf '%s\n' "${owners_aliases_content}" | grep -E '^[[:space:]]*-[[:space:]]*[A-Za-z0-9_-]+' | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/[[:space:]]*$//' || true)
+    owners_list+=$'\n'
+  fi
+
+  codeowners_content=$(git show "${owners_ref}:CODEOWNERS" 2>/dev/null || true)
+  if [[ -n "${codeowners_content}" ]]; then
+    owners_list+=$(printf '%s\n' "${codeowners_content}" | grep -v '^#' | grep -oE '@[A-Za-z0-9_-]+' | tr -d '@' || true)
+  fi
+
+  if printf '%s\n' "${owners_list}" | tr '[:upper:]' '[:lower:]' | grep -Fxq "${actor_lc}" ||
+    printf '%s\n' "${owners_list}" | tr '[:upper:]' '[:lower:]' | sed 's/\[bot\]$//' | grep -Fxq "${actor_base_lc}"; then
+    return 0
+  fi
+
+  if [[ "${actor}" == *"[bot]" || "${actor}" == *"-robot" ]]; then
+    return 1
+  fi
+
+  case "${assoc}" in
+  COLLABORATOR | MEMBER | OWNER)
+    return 0
+    ;;
+  esac
+
+  return 1
+}
+
+# prepare_trusted_ci_files copies the CI runner scripts into an isolated
+# directory (/tmp/ci-trusted) outside the repository working tree before any
+# untrusted PR ref is checked out. When origin/main already contains the CI
+# scripts, they are extracted strictly from origin/main.
+prepare_trusted_ci_files() {
+  CI_TRUSTED_DIR="/tmp/ci-trusted"
+  rm -rf "${CI_TRUSTED_DIR}"
+  mkdir -p "${CI_TRUSTED_DIR}/scripts"
+
+  if git rev-parse --verify origin/main >/dev/null 2>&1 &&
+    git show origin/main:scripts/ci-common.sh 2>/dev/null | grep -q 'verify_pr_head_at_comment_time' &&
+    git cat-file -e origin/main:scripts/ci-integration-test.sh 2>/dev/null; then
+    echo "Staging trusted CI scripts from origin/main..."
+    git show origin/main:scripts/ci-common.sh >"${CI_TRUSTED_DIR}/scripts/ci-common.sh"
+    git show origin/main:scripts/ci-integration-test.sh >"${CI_TRUSTED_DIR}/scripts/ci-integration-test.sh"
+  else
+    echo "Staging trusted CI scripts from current base checkout..."
+    cp ./scripts/ci-common.sh "${CI_TRUSTED_DIR}/scripts/ci-common.sh"
+    cp ./scripts/ci-integration-test.sh "${CI_TRUSTED_DIR}/scripts/ci-integration-test.sh"
+  fi
+
+  chmod +x "${CI_TRUSTED_DIR}/scripts/ci-common.sh" "${CI_TRUSTED_DIR}/scripts/ci-integration-test.sh"
+  export CI_TRUSTED_DIR
+}
+
+# verify_pr_head_at_comment_time ensures that when triggered via '/test-integration'
+# (issue_comment), the fetched PR head commit already existed on the PR before the
+# comment was posted, preventing a TOCTOU race if a commit is pushed right after
+# the reviewer comments.
+verify_pr_head_at_comment_time() {
+  if [[ "${GITHUB_EVENT_NAME:-}" != "issue_comment" || ! -f "${GITHUB_EVENT_PATH:-}" ]]; then
+    return 0
+  fi
+
+  local comment_created_at comment_epoch
+  comment_created_at=$(jq -r '.comment.created_at // empty' "${GITHUB_EVENT_PATH}")
+  if [[ -z "${comment_created_at}" ]]; then
+    echo "::error::Missing .comment.created_at in issue_comment event payload."
+    exit 1
+  fi
+  comment_epoch=$(date -d "${comment_created_at}" +%s)
+
+  local commit_date commit_epoch
+  commit_date=$(git show -s --format=%cI "${PR_HEAD_SHA}")
+  commit_epoch=$(date -d "${commit_date}" +%s)
+  if [[ "${commit_epoch}" -gt "${comment_epoch}" ]]; then
+    echo "::error::PR #${PR_NUMBER} head commit ${PR_HEAD_SHA:0:7} was committed at ${commit_date}, which is after the '/test-integration' comment was posted at ${comment_created_at}. Aborting to prevent executing unreviewed code."
+    exit 1
+  fi
+
+  if [[ -n "${GH_TOKEN:-}" && -n "${GITHUB_REPOSITORY:-}" ]]; then
+    local latest_timeline_event_at
+    latest_timeline_event_at=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100" 2>/dev/null |
+      jq -rs '[ .[][] | select(.event == "committed" or .event == "head_ref_force_pushed") | (.created_at // .committer.date // empty) | select(length > 0) ] | sort | last // empty' || true)
+    if [[ -n "${latest_timeline_event_at}" ]]; then
+      local timeline_epoch
+      timeline_epoch=$(date -d "${latest_timeline_event_at}" +%s)
+      if [[ "${timeline_epoch}" -gt "${comment_epoch}" ]]; then
+        echo "::error::PR #${PR_NUMBER} had a commit or force-push at ${latest_timeline_event_at}, which is after the '/test-integration' comment was posted at ${comment_created_at}. Aborting to prevent executing unreviewed code."
+        exit 1
+      fi
+    fi
+
+    local earliest_suite_at
+    earliest_suite_at=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-suites" \
+      --jq '[ .check_suites[]?.created_at // empty | select(length > 0) ] | sort | first // empty' 2>/dev/null || true)
+    if [[ -n "${earliest_suite_at}" ]]; then
+      local suite_epoch
+      suite_epoch=$(date -d "${earliest_suite_at}" +%s)
+      if [[ "${suite_epoch}" -gt "${comment_epoch}" ]]; then
+        echo "::error::PR #${PR_NUMBER} head commit ${PR_HEAD_SHA:0:7} was pushed to GitHub at ${earliest_suite_at}, which is after the '/test-integration' comment was posted at ${comment_created_at}. Aborting to prevent executing unreviewed code."
+        exit 1
+      fi
+    fi
+  fi
+
+  echo "Verified PR #${PR_NUMBER} head commit ${PR_HEAD_SHA:0:7} predates '/test-integration' comment (${comment_created_at})."
+}
+
+# should_skip_non_code_changes returns 0 (true) on pull_request events when:
+# 1. All files modified in the PR relative to origin/main are non-code files, OR
+# 2. The PR branch already has a previous commit where the 'Run BOSH CPI
+#    Integration Test' step succeeded, and only non-runtime files changed between
+#    that tested commit and the current PR head.
+should_skip_non_code_changes() {
+  if [[ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]]; then
+    return 1
+  fi
+
+  local non_code_regex='^(\.gitignore|\.golangci\.yaml|OWNERS.*|CODEOWNERS|LICENSE.*|NOTICE.*|Makefile|.*\.md|docs/.*|\.github/.*|scripts/ci-common\.sh)$'
+  local pr_head_sha=""
+  if [[ -f "${GITHUB_EVENT_PATH:-}" ]]; then
+    pr_head_sha=$(jq -r '.pull_request.head.sha // empty' "${GITHUB_EVENT_PATH}")
+  fi
+  if [[ -z "${pr_head_sha}" ]]; then
+    pr_head_sha=$(git rev-parse HEAD)
+  fi
+
+  local commit_msg
+  commit_msg=$(git log -1 --pretty=%B "${pr_head_sha}" 2>/dev/null || true)
+  if printf '%s\n' "${commit_msg}" | grep -Eq '\[(skip-cpi-integ|skip-integ)\]'; then
+    echo "Commit message contains skip directive ([skip-cpi-integ] or [skip-integ]). Skipping integration test."
+    return 0
+  fi
+
+  local pr_files
+  pr_files=$(git diff --name-only "origin/main...${pr_head_sha}" 2>/dev/null || true)
+  if [[ -n "${pr_files}" ]]; then
+    if ! printf '%s\n' "${pr_files}" | grep -qvE "${non_code_regex}"; then
+      echo "All files changed in PR (${pr_files//$'\n'/, }) are non-code files. Skipping integration test."
+      return 0
+    fi
+  fi
+
+  local head_ref="${GITHUB_HEAD_REF:-}"
+  if [[ -z "${head_ref}" && -f "${GITHUB_EVENT_PATH:-}" ]]; then
+    head_ref=$(jq -r '.pull_request.head.ref // empty' "${GITHUB_EVENT_PATH}")
+  fi
+  if [[ -z "${head_ref}" || -z "${GH_TOKEN:-}" || -z "${GITHUB_REPOSITORY:-}" ]]; then
+    return 1
+  fi
+
+  local candidate_runs
+  candidate_runs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/integration-test.yaml/runs?branch=${head_ref}&status=completed&per_page=10" \
+    --jq '.workflow_runs[] | select(.conclusion == "success") | "\(.id) \(.head_sha)"' 2>/dev/null || true)
+  if [[ -z "${candidate_runs}" ]]; then
+    return 1
+  fi
+
+  local run_id prev_sha tested_sha=""
+  while read -r run_id prev_sha; do
+    [[ -z "${run_id}" || -z "${prev_sha}" || "${prev_sha}" == "${pr_head_sha}" ]] && continue
+    local step_ok
+    step_ok=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs" \
+      --jq '.jobs[] | select(.name == "BOSH CPI Integration Test (GDC Staging)") | .steps[] | select(.name == "Run BOSH CPI Integration Test" and .conclusion == "success") | .conclusion' 2>/dev/null | head -n 1 || true)
+    if [[ "${step_ok}" == "success" ]]; then
+      tested_sha="${prev_sha}"
+      break
+    fi
+  done <<<"${candidate_runs}"
+
+  if [[ -z "${tested_sha}" ]]; then
+    return 1
+  fi
+
+  if ! git cat-file -e "${tested_sha}^{commit}" 2>/dev/null; then
+    git fetch --depth=50 origin "${tested_sha}" >/dev/null 2>&1 || return 1
+  fi
+
+  local prev_base curr_base changed_files
+  prev_base=$(git merge-base origin/main "${tested_sha}" 2>/dev/null || echo "origin/main")
+  curr_base=$(git merge-base origin/main "${pr_head_sha}" 2>/dev/null || echo "origin/main")
+  changed_files=$(git diff --name-only "${tested_sha}" "${pr_head_sha}" 2>/dev/null || return 1)
+
+  local file effective_changes=()
+  while IFS= read -r file; do
+    [[ -z "${file}" ]] && continue
+    if [[ "$(git diff "${prev_base}" "${tested_sha}" -- "${file}" 2>/dev/null | git patch-id --stable | awk '{print $1}')" == "$(git diff "${curr_base}" "${pr_head_sha}" -- "${file}" 2>/dev/null | git patch-id --stable | awk '{print $1}')" ]]; then
+      continue
+    fi
+    effective_changes+=("${file}")
+  done <<<"${changed_files}"
+
+  if [[ "${#effective_changes[@]}" -eq 0 ]]; then
+    echo "Integration test already passed on ${tested_sha:0:7} and no PR files changed since then (rebase only). Skipping integration test rerun."
+    return 0
+  fi
+
+  for file in "${effective_changes[@]}"; do
+    if ! [[ "${file}" =~ ${non_code_regex} ]]; then
+      echo "Code file '${file}' changed since last passing commit ${tested_sha:0:7}; integration test will run."
+      return 1
+    fi
+  done
+
+  echo "Integration test already passed on ${tested_sha:0:7} and only non-code files changed since then (${effective_changes[*]}). Skipping integration test rerun."
+  return 0
+}
+
+# resolve_cpi_integ_filter determines the Go test regex filter for BOSH CPI
+# integration tests based on explicit input, commit message directives, or
+# modified file paths relative to origin/main.
+resolve_cpi_integ_filter() {
+  if [[ -n "${CPI_INTEG_FILTER:-}" ]]; then
+    echo "Using explicit CPI integration test filter: ${CPI_INTEG_FILTER}"
+    export CPI_INTEG_FILTER
+    return 0
+  fi
+
+  local commit_msg
+  commit_msg=$(git log -1 --pretty=%B 2>/dev/null || true)
+  local directive_filter
+  directive_filter=$(printf '%s\n' "${commit_msg}" | sed -nE 's/.*\[cpi-integ-filter:[[:space:]]*([A-Za-z0-9_|^$.*+-]+)\].*/\1/p' | head -n 1 || true)
+  if [[ -n "${directive_filter}" ]]; then
+    CPI_INTEG_FILTER="${directive_filter}"
+    echo "Using CPI integration test filter from commit message directive: ${CPI_INTEG_FILTER}"
+    export CPI_INTEG_FILTER
+    return 0
+  fi
+
+  local changed_files
+  changed_files=$(git diff --name-only origin/main...HEAD 2>/dev/null || true)
+  if [[ -z "${changed_files}" ]]; then
+    CPI_INTEG_FILTER="TestMultizone"
+    export CPI_INTEG_FILTER
+    return 0
+  fi
+
+  local has_disk=false has_vm=false has_stemcell=false has_other=false
+  local f
+  while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
+    case "${f}" in
+    bosh-cpi/pkg/disk/*)
+      has_disk=true
+      ;;
+    bosh-cpi/pkg/vm/*)
+      has_vm=true
+      ;;
+    bosh-cpi/pkg/stemcell/*)
+      has_stemcell=true
+      ;;
+    bosh-cpi/* | go.mod | go.sum | jobs/* | packages/* | scripts/ci-integration-test.sh)
+      has_other=true
+      ;;
+    esac
+  done <<<"${changed_files}"
+
+  if [[ "${has_other}" == "true" ]]; then
+    CPI_INTEG_FILTER="TestMultizone"
+  elif [[ "${has_disk}" == "true" && "${has_vm}" == "false" && "${has_stemcell}" == "false" ]]; then
+    CPI_INTEG_FILTER="TestMultizoneDiskMethods"
+  elif [[ "${has_vm}" == "true" && "${has_disk}" == "false" && "${has_stemcell}" == "false" ]]; then
+    CPI_INTEG_FILTER="TestMultizoneVMAndDiskMethods"
+  elif [[ "${has_stemcell}" == "true" && "${has_disk}" == "false" && "${has_vm}" == "false" ]]; then
+    CPI_INTEG_FILTER="TestMultizoneStemcellMethods"
+  else
+    CPI_INTEG_FILTER="TestMultizone"
+  fi
+
+  echo "Auto-detected CPI integration test filter from changed files: ${CPI_INTEG_FILTER}"
+  export CPI_INTEG_FILTER
+}
+
+# check_ci_preconditions verifies whether the integration test should run when
+# triggered by GitHub Actions, and checks out the target PR on manual dispatch
+# or '/test-integration' PR comment.
+check_ci_preconditions() {
+  if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
+    return 0
+  fi
+
+  if [[ "${CI_STAGE_PRECONDITIONS:-}" != "true" && -z "${CI_LOG_FILE:-}" ]]; then
+    CI_LOG_FILE="$(mktemp /tmp/ci-integration-XXXXXX.log)"
+    export CI_LOG_FILE
+    exec > >(tee -a "${CI_LOG_FILE}") 2>&1
+    CI_TEE_PID=$!
+    export CI_TEE_PID
+  fi
+
+  if [[ "${CI_PRECONDITIONS_VERIFIED:-}" == "true" ]]; then
+    return 0
+  fi
+
+  if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && -f "${GITHUB_EVENT_PATH:-}" ]]; then
+    local head_repo author_association pr_user pr_number
+    head_repo=$(jq -r '.pull_request.head.repo.full_name // empty' "${GITHUB_EVENT_PATH}")
+    author_association=$(jq -r '.pull_request.author_association // empty' "${GITHUB_EVENT_PATH}")
+    pr_user=$(jq -r '.pull_request.user.login // empty' "${GITHUB_EVENT_PATH}")
+    pr_number=$(jq -r '.pull_request.number // empty' "${GITHUB_EVENT_PATH}")
+
+    if [[ "${head_repo}" != "${GITHUB_REPOSITORY:-}" ]]; then
+      echo "Skipping automatic integration test for forked PR (${head_repo})."
+      echo "A maintainer must trigger this test manually by commenting '/test-integration' on the PR or via workflow_dispatch with pr_number=${pr_number}."
+      exit 1
+    fi
+
+    if ! is_authorized_maintainer "${pr_user}" "${author_association}"; then
+      echo "Skipping automatic integration test for untrusted author '${pr_user}' (author_association='${author_association}')."
+      echo "A maintainer must trigger this test manually by commenting '/test-integration' on the PR or via workflow_dispatch with pr_number=${pr_number}."
+      exit 1
+    fi
+
+    if should_skip_non_code_changes; then
+      if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+        echo "should_run=false" >>"${GITHUB_OUTPUT}"
+      fi
+      exit 0
+    fi
+  fi
+
+  if [[ "${GITHUB_EVENT_NAME:-}" == "issue_comment" && -f "${GITHUB_EVENT_PATH:-}" ]]; then
+    local is_pr comment_body comment_user comment_assoc comment_id cmd_line cmd_arg
+    is_pr=$(jq -r '.issue.pull_request.url // empty' "${GITHUB_EVENT_PATH}")
+    comment_body=$(jq -r '.comment.body // empty' "${GITHUB_EVENT_PATH}")
+    comment_user=$(jq -r '.comment.user.login // empty' "${GITHUB_EVENT_PATH}")
+    comment_assoc=$(jq -r '.comment.author_association // empty' "${GITHUB_EVENT_PATH}")
+    comment_id=$(jq -r '.comment.id // empty' "${GITHUB_EVENT_PATH}")
+    PR_NUMBER=$(jq -r '.issue.number // empty' "${GITHUB_EVENT_PATH}")
+    export PR_NUMBER
+
+    cmd_line=$(printf '%s\n' "${comment_body}" | tr -d '\r' | grep -E '^[[:space:]]*/test-integration([[:space:]]|$)' | head -n 1 || true)
+    if [[ -z "${is_pr}" || -z "${cmd_line}" ]]; then
+      echo "Comment does not contain a '/test-integration' command line on a pull request. Skipping."
+      if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+        echo "should_run=false" >>"${GITHUB_OUTPUT}"
+      fi
+      exit 0
+    fi
+
+    if ! is_authorized_maintainer "${comment_user}" "${comment_assoc}"; then
+      echo "::error::User '${comment_user}' (author_association='${comment_assoc}') is not authorized to trigger '/test-integration'."
+      exit 1
+    fi
+
+    cmd_arg=$(printf '%s\n' "${cmd_line}" | sed -E 's/^[[:space:]]*\/test-integration[[:space:]]*//; s/^--filter=//; s/[[:space:]]*$//')
+    if [[ -n "${cmd_arg}" && -z "${CPI_INTEG_FILTER:-}" ]]; then
+      if [[ "${cmd_arg}" =~ ^[A-Za-z0-9_|^$.*+-]+$ ]]; then
+        CPI_INTEG_FILTER="${cmd_arg}"
+        export CPI_INTEG_FILTER
+      else
+        echo "::error::Invalid filter argument '${cmd_arg}' in '/test-integration' comment."
+        exit 1
+      fi
+    fi
+
+    if [[ -n "${comment_id}" && -n "${GH_TOKEN:-}" && -n "${GITHUB_REPOSITORY:-}" ]]; then
+      gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}/reactions" \
+        -f content='rocket' >/dev/null 2>&1 || true
+    fi
+  fi
+
+  if [[ "${GITHUB_EVENT_NAME:-}" == "workflow_dispatch" ]]; then
+    if ! is_authorized_maintainer "${GITHUB_ACTOR:-}" ""; then
+      echo "::error::User '${GITHUB_ACTOR:-}' is not authorized to trigger workflow_dispatch."
+      exit 1
+    fi
+  fi
+
+  prepare_trusted_ci_files
+
+  if [[ ("${GITHUB_EVENT_NAME:-}" == "workflow_dispatch" || "${GITHUB_EVENT_NAME:-}" == "issue_comment") && -n "${PR_NUMBER:-}" ]]; then
+    local base_branch_sha
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+      base_branch_sha="$(git rev-parse origin/main)"
+    else
+      base_branch_sha="$(git rev-parse HEAD)"
+    fi
+    echo "Fetching and checking out PR #${PR_NUMBER}..."
+    git fetch origin "pull/${PR_NUMBER}/head:pr-${PR_NUMBER}"
+    PR_HEAD_SHA="$(git rev-parse "pr-${PR_NUMBER}")"
+    export PR_HEAD_SHA
+    COMMIT_HASH="${PR_HEAD_SHA:0:7}"
+    export COMMIT_HASH
+    verify_pr_head_at_comment_time
+    start_pr_check_run "${CHECK_NAME:-BOSH CPI Integration Test (GDC Staging)}"
+    git checkout "pr-${PR_NUMBER}"
+    echo "Merging base branch (${base_branch_sha:0:7}) into PR #${PR_NUMBER} (${COMMIT_HASH})..."
+    if ! git -c user.name="github-actions[bot]" -c user.email="github-actions[bot]@users.noreply.github.com" \
+      merge --no-edit "${base_branch_sha}"; then
+      echo "::error::Failed to merge base branch (${base_branch_sha:0:7}) into PR #${PR_NUMBER} (${COMMIT_HASH}). Please rebase the PR onto main."
+      complete_pr_check_run 1
+      exit 1
+    fi
+  fi
+
+  resolve_cpi_integ_filter
+}
+
+# verify_and_prepare_ci runs in the dedicated secret-less precondition step in
+# GitHub Actions and exports verified state to GITHUB_ENV and GITHUB_OUTPUT.
+verify_and_prepare_ci() {
+  CI_STAGE_PRECONDITIONS=true check_ci_preconditions
+
+  if [[ -n "${GITHUB_ENV:-}" ]]; then
+    {
+      echo "CI_PRECONDITIONS_VERIFIED=true"
+      echo "CI_TRUSTED_DIR=${CI_TRUSTED_DIR}"
+      [[ -n "${PR_NUMBER:-}" ]] && echo "PR_NUMBER=${PR_NUMBER}"
+      [[ -n "${PR_HEAD_SHA:-}" ]] && echo "PR_HEAD_SHA=${PR_HEAD_SHA}"
+      [[ -n "${PR_CHECK_RUN_ID:-}" ]] && echo "PR_CHECK_RUN_ID=${PR_CHECK_RUN_ID}"
+      [[ -n "${COMMIT_HASH:-}" ]] && echo "COMMIT_HASH=${COMMIT_HASH}"
+      [[ -n "${CPI_INTEG_FILTER:-}" ]] && echo "CPI_INTEG_FILTER=${CPI_INTEG_FILTER}"
+    } >>"${GITHUB_ENV}"
+  fi
+
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo "should_run=true" >>"${GITHUB_OUTPUT}"
+  fi
+}
+
+# start_pr_check_run creates an in_progress GitHub Check Run on PR_HEAD_SHA when
+# triggered via '/test-integration' or workflow_dispatch so the manual run
+# satisfies required status checks on the PR.
+start_pr_check_run() {
+  local check_name="$1"
+  if [[ -z "${PR_HEAD_SHA:-}" || -z "${GH_TOKEN:-}" || -z "${GITHUB_REPOSITORY:-}" ]]; then
+    return 0
+  fi
+
+  local run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-}"
+  echo "Creating in_progress check-run '${check_name}' on PR #${PR_NUMBER} commit ${PR_HEAD_SHA}..."
+  PR_CHECK_RUN_ID=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/check-runs" \
+    -f name="${check_name}" \
+    -f head_sha="${PR_HEAD_SHA}" \
+    -f status="in_progress" \
+    -f details_url="${run_url}" \
+    -f "output[title]=Running via ${GITHUB_EVENT_NAME:-manual trigger}" \
+    -f "output[summary]=Triggered by @${GITHUB_ACTOR:-maintainer} (${GITHUB_EVENT_NAME:-manual}) for PR #${PR_NUMBER} (${run_url})." \
+    --jq '.id' 2>/dev/null || true)
+  export PR_CHECK_RUN_ID
+}
+
+# complete_pr_check_run emits a GitHub Actions failure annotation (if non-zero)
+# and updates the manual check-run on PR_HEAD_SHA with the final conclusion.
+complete_pr_check_run() {
+  local exit_code="$1"
+  if [[ -n "${PR_CHECK_RUN_ID:-}" && -n "${GH_TOKEN:-}" && -n "${GITHUB_REPOSITORY:-}" ]]; then
+    local conclusion="failure"
+    local title="Integration test failed"
+    if [[ "${exit_code}" -eq 0 ]]; then
+      conclusion="success"
+      title="Integration test passed"
+    fi
+
+    local run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-}"
+    echo "Updating check-run ${PR_CHECK_RUN_ID} on PR #${PR_NUMBER} (${PR_HEAD_SHA}) with conclusion=${conclusion}..."
+    gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${PR_CHECK_RUN_ID}" \
+      -f status="completed" \
+      -f conclusion="${conclusion}" \
+      -f details_url="${run_url}" \
+      -f "output[title]=${title}" \
+      -f "output[summary]=Manual ${GITHUB_EVENT_NAME:-workflow_dispatch} run completed with ${conclusion} (${run_url})." >/dev/null 2>&1 ||
+      echo "Warning: Failed to update check-run ${PR_CHECK_RUN_ID} on PR #${PR_NUMBER}."
+  fi
+
+  if [[ "${GITHUB_ACTIONS:-}" == "true" && -n "${CI_LOG_FILE:-}" ]]; then
+    sleep 1
+    if [[ "${exit_code}" -ne 0 && -s "${CI_LOG_FILE}" ]]; then
+      local err_lines tail_log combined_log
+      err_lines=$(grep -v '^::add-mask::' "${CI_LOG_FILE}" | grep -E '(--- FAIL:|FAIL[[:space:]]|Error:|fatalf|Fatalf|panic:|timed out)' | tail -n 20 || true)
+      tail_log=$(grep -v '^::add-mask::' "${CI_LOG_FILE}" | tail -n 35 || true)
+      if [[ -n "${err_lines}" ]]; then
+        combined_log=$(printf '=== Failure Summary ===\n%s\n=== Log Tail ===\n%s' "${err_lines}" "${tail_log}" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+      else
+        combined_log=$(printf '%s' "${tail_log}" | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+      fi
+      echo "::error title=${CHECK_NAME:-Integration Test} Failed::${combined_log}"
+    fi
+    sleep 1
+    rm -f "${CI_LOG_FILE}"
+    exec >/dev/null 2>&1 || true
+    if [[ -n "${CI_TEE_PID:-}" ]]; then
+      pkill -P "${CI_TEE_PID}" 2>/dev/null || true
+      kill "${CI_TEE_PID}" 2>/dev/null || true
+    fi
+  fi
+}
+
+# setup_cpi_config writes the GDC CPI configuration JSON to disk, masks all
+# secret lines in GitHub Actions logs, and validates required fields.
+setup_cpi_config() {
+  local xtrace_was_set=false
+  if [[ "$-" == *x* ]]; then
+    xtrace_was_set=true
+    set +x
+  fi
+
+  local config_file="$1"
+  local raw_config="${2:-}"
+
+  if [[ -n "${raw_config}" ]]; then
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        if [[ -n "${line}" && "${line}" != "{" && "${line}" != "}" ]]; then
+          echo "::add-mask::${line}"
+        fi
+      done <<<"${raw_config}"
+
+      local secret_values
+      secret_values=$(printf '%s' "${raw_config}" | jq -r '
+        [
+          .gdch.serviceAccountPKConfig.privateKey // empty,
+          .gdch.serviceAccountPKConfig.privateKeyID // empty,
+          .gdch.storageCredential.accessKeyID // empty,
+          .gdch.storageCredential.accessKey // empty
+        ][] | select(length > 0)
+      ' 2>/dev/null || true)
+      while IFS= read -r sline; do
+        sline="${sline#"${sline%%[![:space:]]*}"}"
+        sline="${sline%"${sline##*[![:space:]]}"}"
+        if [[ -n "${sline}" ]]; then
+          echo "::add-mask::${sline}"
+        fi
+      done <<<"${secret_values}"
+    fi
+
+    local normalized_cfg=""
+    if normalized_cfg=$(printf '%s' "${raw_config}" | jq . 2>/dev/null) && [[ -n "${normalized_cfg}" ]]; then
+      raw_config="${normalized_cfg}"
+    fi
+
+    mkdir -p "$(dirname "${config_file}")"
+    umask 077
+    printf '%s\n' "${raw_config}" >"${config_file}"
+  elif [[ ! -s "${config_file}" ]]; then
+    echo "::error::GDC CPI configuration not found at ${config_file} and GDC_CPI_CONFIG is not set."
+    exit 1
+  fi
+
+  if [[ "${xtrace_was_set}" == "true" ]]; then
+    set -x
+  fi
+
+  if ! jq -e '.gdch.org and .gdch.serviceAccountPKConfig.project and .gdch.serviceAccountPKConfig.privateKey' "${config_file}" >/dev/null 2>&1; then
+    echo "::error::GDC CPI configuration at ${config_file} is invalid JSON or missing required fields (.gdch.org, .gdch.serviceAccountPKConfig)."
+    exit 1
+  fi
+}

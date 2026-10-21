@@ -1,0 +1,160 @@
+---
+name: gdc_cpi
+
+# BOSH release job template definition, see details in https://bosh.io/docs/create-release/#job-specs
+templates:
+  cpi.erb: bin/cpi
+  cpi_config.json.erb: config/cpi_config.json
+
+packages:
+  - bosh-gdc-cpi
+
+# values of properties are defined in BOSH deployment manifest, see details in https://bosh.io/docs/create-release/#create-props
+properties:
+  gdch.org:
+    description: "GDCH organization"
+    default: ""
+
+  gdch.org_admin_url:
+    description: "Zonal kube server URLs of GDCH organization admin cluster (legacy architecture) or org-infra cluster management plane (Lancer architecture)"
+    default: ""
+
+  gdch.leader_zone:
+    description: "Zone name where the BOSH director VM is provisioned in on multi-zone environment"
+    default: ""
+
+  gdch.global_url:
+    description: "Global kube server URL for multi-zone environment"
+
+  gdch.zonal_urls:
+    description: "Multi-zone environment configuration mapping GDCH zones to associated kube server URLs"
+
+  gdch.project:
+    description: "GDCH project"
+    default: ""
+
+  gdch.token_url:
+    description: "URL of GDCH auth token server"
+    default: ""
+
+  gdch.private_key_id:
+    description: "ID of the private key associated with service account"
+    default: ""
+
+  gdch.private_key:
+    description: "Private key associated with service account"
+    default: ""
+
+  gdch.service_account:
+    description: "User created GDCH service account"
+    default: ""
+
+  gdch.ca_authority_data:
+    description: "GDCH CA authority data"
+    default: ""
+
+  gdch.enable_hot_disk_expansion:
+    description: "Use the option of hot disk expansion on disk resize when set as 'true'"
+    default: true
+
+  gdch.use_tmp_dir_for_ssh_key:
+    description: "Use `/tmp` directory to store ssh key used for creating BOSH director VM when set as 'true'"
+    default: true
+
+  gdch.cpi_config:
+    description: "GDCH CPI config"
+
+  gdch.sa_private_key:
+    description: "Private key of the GDCH service account"
+
+  gdch.storage_secret:
+    description: "GDCH object storage secret associated with service account"
+
+  gdch.ports:
+    description: "List of ports on VM configured with external access. Each port has 'name', 'protocol', and 'port' attributes"
+    default: []
+
+  gdch.disable_ssh_proxy:
+    description: "Control of SSH proxy, set to 'true' when CPI is invoked from Google managed machines outside GDCH network"
+
+  gdch.use_metadata_server:
+    description: "Metadata Server is used to store the VM instance metadata instead of the local file system by default, set to `false` to disable it for using local file system"
+    default: true
+
+  gdch.use_disk_hotplug:
+    description: "If true, enables 'hot' attachment and detachment of persistent disks to a running VM, else attachment requires VM reboot"
+    default: false
+
+  gdch.use_cloud_nat_gateways:
+    description: "Cloud NAT gateways are used for egress"
+    default: true
+
+  gdch.refresh_image_import:
+    description: "If true, kicks off the new custom image import process for a given stemcell version"
+    default: false
+
+  gdch.use_tier1_network:
+    description: "Enable Tier 1 Network for VM instances"
+    default: false
+
+  gdch.timeout.disk_creation:
+    description: "Timeout of disk creation in minutes"
+    default: 60
+
+  gdch.timeout.disk_deletion:
+    description: "Timeout of disk deletion in minutes"
+    default: 60
+
+  gdch.timeout.hot_disk_attachment:
+    description: "Timeout of hot disk attachment in minutes"
+    default: 5
+
+  gdch.timeout.hot_disk_detachment:
+    description: "Timeout of hot disk detachment in minutes"
+    default: 5
+
+  gdch.timeout.snapshot_creation:
+    description: "Timeout of snapshot creation in minutes"
+    default: 5
+
+  gdch.timeout.snapshot_deletion:
+    description: "Timeout of snapshot deletion minutes"
+    default: 5
+
+  gdch.timeout.stemcell_creation:
+    description: "Timeout of stemcell creation in minutes"
+    default: 150
+
+  gdch.timeout.stemcell_deletion:
+    description: "Timeout of stemcell deletion in minutes"
+    default: 10
+
+  gdch.timeout.vm_deletion:
+    description: "Timeout of VM deletion in minutes"
+    default: 60
+
+  gdch.timeout.vm_start:
+    description: "Timeout of booting the VM in minutes"
+    default: 30
+
+  gdch.timeout.vm_stop:
+    description: "Timeout of stopping the running VM in minutes"
+    default: 10
+
+  agent.mbus:
+    description: "Mbus URL used by deployed BOSH agent inside VM"
+
+  agent.ntp:
+    description: "List of NTP servers"
+    default: []
+
+  gdch.release_version:
+    description: "[Deprecated] GDCH release major version, e.g. 1.12, 1.13, etc"
+
+  gdch.is_lancer:
+    description: "[Deprecated] GDCH architecture, set to 'true' for Lancer architecture, otherwise it is legacy architecture"
+    default: false
+
+  gdch.is_multi_zone:
+    description: "[Deprecated] GDCH environment, set to 'true' for multi-zone environment, otherwise it's a single zone environment. Defaults to true."
+    default: true

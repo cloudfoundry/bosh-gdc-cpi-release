@@ -1,0 +1,82 @@
+version: "2"
+run:
+  concurrency: 4
+linters:
+  disable:
+    - unused
+  enable:
+    - copyloopvar
+    - importas
+    - nilerr
+    - revive
+    - whitespace
+  settings:
+    revive:
+      rules:
+        - name: duplicated-imports
+        - name: unused-parameter
+        - name: unreachable-code
+        - name: context-as-argument
+        - name: early-return
+        - name: exported
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - staticcheck
+        text: 'ST1001:'
+      - linters:
+          - staticcheck
+        text: 'ST1005:'
+      - linters:
+          - staticcheck
+        text: 'ST1006:'
+      - linters:
+          - staticcheck
+        text: 'ST1019:'
+      - linters:
+          - staticcheck
+        text: 'ST1023:'
+      - linters:
+          - staticcheck
+        text: 'SA1012:'
+      - linters:
+          - staticcheck
+        text: 'SA1019:'
+      - linters:
+          - staticcheck
+        text: 'S1009:'
+      - linters:
+          - staticcheck
+        text: 'QF1001:'
+      - linters:
+          - staticcheck
+        text: 'QF1003:'
+      - linters:
+          - staticcheck
+        text: 'QF1008:'
+      - linters:
+          - errcheck
+        text: 'Error return value of'
+      - path: (.+)\.go$
+        text: 'duplicated-imports: '
+      - path: (.+)\.go$
+        text: 'unused-parameter: '
+      - path: (.+)\.go$
+        text: 'exported: '
+      - path: (.+)\.go$
+        text: 'early-return: '
+      - path: (.+)\.go$
+        text: 'context-as-argument: '
+    paths:
+      - zz_generated.*\.go$
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
