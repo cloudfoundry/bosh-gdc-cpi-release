@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+set -e
+
+# set directories
+PACKAGES_DIR=${BOSH_PACKAGES_DIR:-/var/vcap/packages}
+JOBS_DIR=${BOSH_JOBS_DIR:-/var/vcap/jobs}
+LOGS_DIR=${LOGS_DIR:-/var/vcap/sys/log/gdc_cpi}
+
+# start CPI
+platform=`uname | tr '[:upper:]' '[:lower:]'`
+cpi_bin="${PACKAGES_DIR}/bosh-gdc-cpi/bin/cpi_${platform}"
+cmd="${cpi_bin} -configPath=${JOBS_DIR}/gdc_cpi/config/cpi_config.json"
+
+if [ -d ${LOGS_DIR} ]; then
+  exec $cmd 2>>${LOGS_DIR}/cpi.stderr.log <&0
+else
+  exec $cmd <&0
+fi

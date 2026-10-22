@@ -1,0 +1,113 @@
+<%=
+# fetch CPI configuration from BOSH deployment manifest
+# properties defined in 'gdc_cpi/spec'
+
+# Base CPI config template
+cpi_config_json = {
+  "gdch" => {
+    "isMultiZone" => p("gdch.is_multi_zone"),
+    "org" => p("gdch.org"),
+    "serviceAccountPKConfig" => {
+      "project" => p("gdch.project"),
+      "tokenUri" => p("gdch.token_url"),
+      "serviceAccountName" => p("gdch.service_account"),
+      "privateKeyID" => p("gdch.private_key_id"),
+      "privateKey" => p("gdch.private_key")
+    },
+    "caData" => p("gdch.ca_authority_data"),
+    "enableHotDiskExpansion" => p("gdch.enable_hot_disk_expansion"),
+    "UseTmpDirForSSHKey" => p("gdch.use_tmp_dir_for_ssh_key"),
+    "timeout" => {
+      "diskCreation" => p("gdch.timeout.disk_creation"),
+      "diskDeletion" => p("gdch.timeout.disk_deletion"),
+      "hotDiskAttachment" => p("gdch.timeout.hot_disk_attachment"),
+      "hotDiskDetachment" => p("gdch.timeout.hot_disk_detachment"),
+      "snapshotCreation" => p("gdch.timeout.snapshot_creation"),
+      "snapshotDeletion" => p("gdch.timeout.snapshot_deletion"),
+      "stemcellCreation" => p("gdch.timeout.stemcell_creation"),
+      "stemcellDeletion" => p("gdch.timeout.stemcell_deletion"),
+      "vmDeletion" => p("gdch.timeout.vm_deletion"),
+      "vmStart" => p("gdch.timeout.vm_start"),
+      "vmStop" => p("gdch.timeout.vm_stop")
+    }
+  },
+  "agent" => {
+    "mbus" => "",
+    "ntp" => []
+  }
+}
+
+if_p("gdch.cpi_config") do |config|
+  cpi_config_json.merge! JSON.parse(config)
+end
+if_p("gdch.sa_private_key") do |private_key|
+  private_key_json = JSON.parse(private_key)
+  cpi_config_json["gdch"]["serviceAccountPKConfig"] = {
+    "project" => private_key_json["project"],
+    "tokenUri" => private_key_json["token_uri"],
+    "serviceAccountName" => private_key_json["name"],
+    "privateKeyID" => private_key_json["private_key_id"],
+    "privateKey" => private_key_json["private_key"]
+  }
+end
+if_p("gdch.storage_secret") do |secret|
+  secret_json = JSON.parse(secret)
+  cpi_config_json["gdch"]["storageCredential"] = {
+    "accessKeyID" => secret_json["data"]["access-key-id"],
+    "accessKey" => secret_json["data"]["secret-access-key"]
+  }
+end
+if_p("gdch.org_admin_url") do |org_admin_url|
+  cpi_config_json["gdch"]["orgAdminURL"] = org_admin_url
+end
+if_p("gdch.leader_zone") do |leader_zone|
+  cpi_config_json["gdch"]["leaderZone"] = leader_zone
+end
+if_p("gdch.global_url") do |global_url|
+  if cpi_config_json["gdch"]["orgAPIEndpoints"].nil?
+    cpi_config_json["gdch"]["orgAPIEndpoints"] = {}
+  end
+
+  cpi_config_json["gdch"]["orgAPIEndpoints"]["globalAPI"] = global_url
+end
+if_p("gdch.zonal_urls") do |urls|
+  if cpi_config_json["gdch"]["orgAPIEndpoints"].nil?
+    cpi_config_json["gdch"]["orgAPIEndpoints"] = {}
+  end
+
+  urls_json = JSON.parse(urls)
+  cpi_config_json["gdch"]["orgAPIEndpoints"]["zonalAPIs"] = urls_json
+end
+if_p("gdch.ports") do |ports|
+  cpi_config_json["gdch"]["externalAccessPorts"] = ports
+end
+if_p("gdch.disable_ssh_proxy") do |disable_proxy|
+  cpi_config_json["gdch"]["disableSSHProxy"] = disable_proxy
+end
+if_p("gdch.use_metadata_server") do |use_metadata_server|
+  cpi_config_json["gdch"]["useMetadataServer"] = use_metadata_server
+end
+if_p("gdch.use_disk_hotplug") do |use_disk_hotplug|
+  cpi_config_json["gdch"]["useDiskHotplug"] = use_disk_hotplug
+end
+if_p("gdch.use_cloud_nat_gateways") do |use_cloud_nat_gateways|
+  cpi_config_json["gdch"]["useCloudNATGateways"] = use_cloud_nat_gateways
+end
+if_p("gdch.refresh_image_import") do |refresh_image_import|
+  cpi_config_json["gdch"]["refreshImageImport"] = refresh_image_import
+end
+if_p("gdch.use_tier1_network") do |use_tier1_network|
+  cpi_config_json["gdch"]["useTier1Network"] = use_tier1_network
+end
+if_p("gdch.release_version") do |release_version|
+  cpi_config_json["gdch"]["releaseVersion"] = release_version
+end
+if_p("agent.mbus") do |mbus|
+  cpi_config_json["agent"]["mbus"] = mbus
+end
+if_p("agent.ntp") do |ntps|
+  cpi_config_json["agent"]["ntp"] = ntps
+end
+
+JSON.dump(cpi_config_json)
+%>
