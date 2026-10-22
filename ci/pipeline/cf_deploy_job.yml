@@ -1,0 +1,147 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+- type: replace
+  path: /jobs/name=cf-deployment
+  value:
+    name: cf-deployment
+    # No concurrent execution
+    serial: true
+    # When this job is running, other jobs with the `deployment-lock` or `cats-lock` tags have to wait
+    serial_groups: [deployment-lock, cats-lock]
+    plan:
+    - get: cicd-deployment-logs-bosh
+      trigger: true
+      passed: [bosh-deployment]
+    - get: cfbosh-image
+    - get: cicd-deployment-artifacts-bosh
+      params:
+        unpack: true
+    - get: cf-deployment-assets
+      params:
+        unpack: true
+    - get: noble-stemcells
+    - task: deploy-cf
+      image: cfbosh-image
+      config:
+        platform: linux
+        inputs:
+        - name: cicd-deployment-logs-bosh
+        - name: cicd-deployment-artifacts-bosh
+        - name: cf-deployment-assets
+        - name: noble-stemcells
+        outputs:
+        - name: log_dir
+        params:
+          GCS_SERVICE_ACCOUNT_KEY: ((credentials.cfbosh-cicd-sa_key))
+        run:
+          path: bash
+          args:
+          - -cx
+          - |
+            set -e
+
+            root_dir=$(pwd)
+
+            log_file=$(find cicd-deployment-logs-bosh -type f -name "log_*.md" -printf "%f")
+            echo "[INFO] Got deployment log: ${log_file}"
+            cp cicd-deployment-logs-bosh/${log_file} log_dir/${log_file}
+
+            build_id=$(awk '/Build ID:/ {print $4}' log_dir/${log_file})
+            echo "[INFO] Got build ID: ${build_id}"
+
+            cp -r cicd-deployment-artifacts-bosh/ cicd-deployment-artifacts/
+
+            cf_deploy_assets_tarball=$(find cf-deployment-assets -type f -name "*.tar" -printf "%f")
+            cp -rn cf-deployment-assets/ cicd-deployment-artifacts/
+            echo "* CF deployment assets tarball: ${cf_deploy_assets_tarball}" >> log_dir/${log_file}
+
+            noble_stemcell_tarball=$(find noble-stemcells -type f -name "bosh-stemcell-*-gdch-kvm-ubuntu-noble.tgz" -printf "%f")
+            echo "* CF Noble stemcell tarball: ${noble_stemcell_tarball}" >> log_dir/${log_file}
+
+            echo "[INFO] Authenticating Concourse container as CI Service Account to access the CI GCS bucket"
+            set +x # Hide service account key - otherwise prints to logs
+            printf '%s' "$GCS_SERVICE_ACCOUNT_KEY" > /tmp/gcs_key.json
+            set -x
+            gcloud auth activate-service-account --key-file=/tmp/gcs_key.json
+            export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcs_key.json
+
+            echo "[INFO] Start CF deployment"
+
+            ls cicd-deployment-artifacts/cf-deployment-assets/gdch/
+
+            cd "${root_dir}/cicd-deployment-artifacts/bosh-deployment-assets/gdch/scripts"
+            source ./set-env-var-on-long-running-cf.sh
+
+            export BOSH_DEPLOYMENT_ASSETS_DIR="${root_dir}/cicd-deployment-artifacts/bosh-deployment-assets"
+            export KUBECONFIGS_DIRECTORY="${BOSH_DEPLOYMENT_ASSETS_DIR}/kubeconfigs"
+            export PATH_TO_BOSH_VARS_STORE_FILE="${BOSH_DEPLOYMENT_ASSETS_DIR}/vars_store_${DIRECTOR_VM_NAME}.yml"
+
+            echo "[INFO] Initializing GDC session and fetching fresh admin kubeconfigs"
+            ./setup-session.sh --is-long-running-cf --non-interactive --keep-gdcloud-config
+
+            echo "[INFO] Creating BOSH environment alias '${BOSH_ENV_ALIAS}' for the BOSH Director created by bosh-deployment"
+            bosh alias-env "${BOSH_ENV_ALIAS}" -e "${DIRECTOR_DNS}:25555" --ca-cert <(bosh int "${PATH_TO_BOSH_VARS_STORE_FILE}" --path /default_ca/ca)
+            export BOSH_CLIENT=admin
+            set +x
+            export BOSH_CLIENT_SECRET=$(bosh int "${PATH_TO_BOSH_VARS_STORE_FILE}" --path /admin_password)
+            set -x
+
+            cd "${root_dir}/cicd-deployment-artifacts/cf-deployment-assets/gdch/scripts"
+            source ./set-env-var-on-long-running-cf.sh
+
+            export CF_DEPLOYMENT_ASSETS_DIR="${root_dir}/cicd-deployment-artifacts/cf-deployment-assets"
+            export PATH_OF_CLOUD_CONFIG_ROOT="${CF_DEPLOYMENT_ASSETS_DIR}/gdch"
+            export TF_FILES_DIRECTORY="${CF_DEPLOYMENT_ASSETS_DIR}/gdch/terraform"
+            export PATH_TO_GDCH_STEMCELL_TARBALL="${root_dir}/noble-stemcells/${noble_stemcell_tarball}"
+            export GLOBAL_API_KUBECONFIG="${KUBECONFIGS_DIRECTORY}/pa_global_api_kubeconfig"
+            export ZONES_CONFIG_FILE="${CF_DEPLOYMENT_ASSETS_DIR}/gdch/scripts/long-running-cf-zones.json"
+
+            ./cf-deploy.sh \
+              --managed-dns-zone "${MANAGED_DNS_ZONE}" \
+              --use-lb-static-ip \
+              --lb-static-ip-parent-subnet "${LB_STATIC_IP_PARENT_SUBNET}" \
+              --use-noble-stemcell \
+              --prepare-local-releases \
+              --is-long-running-cf \
+              --non-interactive \
+              --no-color
+
+            rm -rf "${CF_DEPLOYMENT_ASSETS_DIR}/local_releases"
+
+            cd ${root_dir}
+            echo "-> CF deployment: DONE" >> log_dir/${log_file}
+
+            cd cicd-deployment-artifacts/
+
+            deployment_artifact=artifacts_${build_id}_cf.tar.gz
+            tar -czvf ${deployment_artifact} bosh-deployment-assets/ \
+            cf-deployment-assets/ \
+            cpi-releases/ \
+            noble-stemcells/
+            cp ${deployment_artifact} ${root_dir}/log_dir/
+
+            cd ${root_dir}
+            echo "-> Prepared deployment artifacts ${deployment_artifact} with CF deployment context" >> log_dir/${log_file}
+
+            echo "[INFO] Updated deployment log log_dir/${log_file}"
+    - put: cicd-deployment-artifacts-cf
+      params:
+        file: log_dir/artifacts_*_cf.tar.gz
+    - put: cicd-deployment-logs-cf
+      params:
+        file: log_dir/log_*.md
+    - put: cicd-deployment-logs
+      params:
+        file: log_dir/log_*.md

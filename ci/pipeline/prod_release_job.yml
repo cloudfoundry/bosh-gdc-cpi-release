@@ -1,0 +1,80 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+- type: replace
+  path: /jobs/name=promote-candidate
+  value:
+    name: promote-candidate
+    # No concurrent execution
+    serial: true
+    # When this job is running, other jobs with the `deployment-lock` tag have to wait
+    serial_groups: [deployment-lock]
+    plan:
+    # Only runs for a build that passed the release gate (run-bats and run-cats)
+    - get: cicd-deployment-logs-cf
+      trigger: true
+      passed: [pre-release-fan-in]
+    - get: cfbosh-image
+    - get: cicd-deployment-artifacts-cf
+      passed: [pre-release-fan-in]
+      params:
+        unpack: true
+    - task: prod-release
+      image: cfbosh-image
+      config:
+        platform: linux
+        inputs:
+        - name: cicd-deployment-logs-cf
+        - name: cicd-deployment-artifacts-cf
+        outputs:
+        - name: log_dir
+        run:
+          path: sh
+          args:
+          - -cx
+          - |
+            set -e
+
+            root_dir=$(pwd)
+
+            log_file=$(find cicd-deployment-logs-cf -type f -name "log_*.md" -printf "%f")
+            echo "[INFO] Got deployment log: ${log_file}"
+            cp cicd-deployment-logs-cf/${log_file} log_dir/${log_file}
+
+            build_id=$(awk '/Build ID:/ {print $4}' log_dir/${log_file})
+            echo "[INFO] Got build ID: ${build_id}"
+
+            echo "[INFO] Releasing qualified deliverables"
+
+            ls cicd-deployment-artifacts-cf/
+
+            # TODO(b/442003967): Publish the qualified deliverables after the GitHub migration
+
+            echo "[WARN] Publishing the qualified deliverables is not implemented yet"
+
+            # artifacts_${build_id}_cf.tar.gz got from dependency cf-deployment job includes
+            # all end to end deployment artifacts
+            deployment_artifact=artifacts_${build_id}.tar.gz
+            cp cicd-deployment-artifacts-cf/artifacts_${build_id}_cf.tar.gz log_dir/${deployment_artifact}
+
+            cd ${root_dir}
+            echo "-> Prod release: DONE" >> log_dir/${log_file}
+
+            echo "[INFO] Updated deployment log log_dir/${log_file}"
+    - put: cicd-deployment-artifacts
+      params:
+        file: log_dir/artifacts_*.tar.gz
+    - put: cicd-deployment-logs
+      params:
+        file: log_dir/log_*.md

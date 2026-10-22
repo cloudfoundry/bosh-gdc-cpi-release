@@ -1,0 +1,32 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+# Release gate: promote-candidate only runs for a build where the same run passed
+# both run-bats and run-cats. cicd-deployment-logs-bosh flows through both jobs,
+# so `passed: [run-bats, run-cats]` pins one run; the cf-stage inputs come from
+# the same run-cats build.
+- type: replace
+  path: /jobs/name=pre-release-fan-in
+  value:
+    name: pre-release-fan-in
+    plan:
+    - get: cicd-deployment-logs-bosh
+      trigger: true
+      passed: [run-bats, run-cats]
+    - get: cicd-deployment-logs-cf
+      trigger: true
+      passed: [run-cats]
+    - get: cicd-deployment-artifacts-cf
+      passed: [run-cats]

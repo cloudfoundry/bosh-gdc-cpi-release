@@ -1,0 +1,142 @@
+# SPDX-FileCopyrightText: 2026 Google LLC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Concourse CI/CD
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'ci/**'
+      - 'scripts/ci-concourse.sh'
+      - 'scripts/ci-common.sh'
+      - '.github/workflows/concourse.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'ci/**'
+      - 'scripts/ci-concourse.sh'
+      - '.github/workflows/concourse.yaml'
+  schedule:
+    # Weekly on Monday at 07:00 UTC: rotate cfbosh-cicd-sa key and refresh the Concourse deployment pipeline
+    - cron: '0 7 * * 1'
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Execution mode (dry-run for validation, apply/update-pipeline for pipeline update, rotate-key for SA key rotation + pipeline refresh)'
+        required: false
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - apply
+          - update-pipeline
+          - rotate-key
+      pr_number:
+        description: 'Pull Request number to test (leave empty to use the selected branch)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  concourse-deployment-pipeline:
+    name: Concourse Deployment Pipeline (GKE)
+    if: >
+      (github.event_name == 'pull_request') ||
+      (github.event_name == 'push') ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       contains(github.event.comment.body, '/test-concourse')) ||
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.mode == 'dry-run' || inputs.mode == 'apply' || inputs.mode == 'update-pipeline'))
+    runs-on: ubuntu-latest
+    environment: cfbosh-staging
+    timeout-minutes: 20
+    concurrency:
+      group: ${{ github.workflow }}-pipeline-${{ inputs.pr_number || github.event.issue.number || github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+      checks: write
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify CI Preconditions
+        id: preconditions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          CHECK_NAME: Concourse Deployment Pipeline (GKE)
+          CI_WORKFLOW_TYPE: concourse
+          CI_COMMENT_TRIGGER: /test-concourse
+        run: |
+          git fetch origin main
+          mkdir -p /tmp/ci-bootstrap
+          if git show origin/main:scripts/ci-common.sh 2>/dev/null | grep -q 'setup_gcp_sa_key'; then
+            git show origin/main:scripts/ci-common.sh > /tmp/ci-bootstrap/ci-common.sh
+          else
+            cp ./scripts/ci-common.sh /tmp/ci-bootstrap/ci-common.sh
+          fi
+          source /tmp/ci-bootstrap/ci-common.sh
+          verify_and_prepare_ci
+
+      - name: Run Concourse Deployment Pipeline Setup
+        if: steps.preconditions.outputs.should_run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHECK_NAME: Concourse Deployment Pipeline (GKE)
+          CONCOURSE_MODE: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'apply' || inputs.mode == 'update-pipeline'))) && 'apply' || 'dry-run' }}
+          GDC_ORG: ${{ secrets.GDC_ORG }}
+          GDC_CONSOLE_URL: ${{ secrets.GDC_CONSOLE_URL }}
+          CFBOSH_CICD_SERVICE_ACCOUNT_KEY: ${{ secrets.CFBOSH_CICD_SERVICE_ACCOUNT_KEY }}
+        run: bash "${CI_TRUSTED_DIR}/scripts/ci-concourse.sh"
+
+  concourse-rotate-key:
+    name: Concourse SA Key Rotation & Pipeline Update
+    if: >
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'rotate-key')
+    runs-on: ubuntu-latest
+    environment: cfbosh-staging
+    timeout-minutes: 20
+    concurrency:
+      group: ${{ github.workflow }}-rotate-key
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify CI Preconditions
+        id: preconditions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CI_WORKFLOW_TYPE: concourse
+        run: |
+          source ./scripts/ci-common.sh
+          verify_and_prepare_ci
+
+      - name: Rotate Concourse SA Key and Refresh Pipeline
+        if: steps.preconditions.outputs.should_run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONCOURSE_MODE: rotate-key
+          GDC_ORG: ${{ secrets.GDC_ORG }}
+          GDC_CONSOLE_URL: ${{ secrets.GDC_CONSOLE_URL }}
+          CFBOSH_CICD_SERVICE_ACCOUNT_KEY: ${{ secrets.CFBOSH_CICD_SERVICE_ACCOUNT_KEY }}
+        run: bash "${CI_TRUSTED_DIR}/scripts/ci-concourse.sh"

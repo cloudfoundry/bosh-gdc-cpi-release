@@ -66,13 +66,21 @@ prepare_trusted_ci_files() {
     echo "Staging trusted CI scripts from origin/main..."
     git show origin/main:scripts/ci-common.sh >"${CI_TRUSTED_DIR}/scripts/ci-common.sh"
     git show origin/main:scripts/ci-integration-test.sh >"${CI_TRUSTED_DIR}/scripts/ci-integration-test.sh"
+    if git cat-file -e origin/main:scripts/ci-concourse.sh 2>/dev/null; then
+      git show origin/main:scripts/ci-concourse.sh >"${CI_TRUSTED_DIR}/scripts/ci-concourse.sh"
+    elif [[ -f ./scripts/ci-concourse.sh ]]; then
+      cp ./scripts/ci-concourse.sh "${CI_TRUSTED_DIR}/scripts/ci-concourse.sh"
+    fi
   else
     echo "Staging trusted CI scripts from current base checkout..."
     cp ./scripts/ci-common.sh "${CI_TRUSTED_DIR}/scripts/ci-common.sh"
     cp ./scripts/ci-integration-test.sh "${CI_TRUSTED_DIR}/scripts/ci-integration-test.sh"
+    if [[ -f ./scripts/ci-concourse.sh ]]; then
+      cp ./scripts/ci-concourse.sh "${CI_TRUSTED_DIR}/scripts/ci-concourse.sh"
+    fi
   fi
 
-  chmod +x "${CI_TRUSTED_DIR}/scripts/ci-common.sh" "${CI_TRUSTED_DIR}/scripts/ci-integration-test.sh"
+  chmod +x "${CI_TRUSTED_DIR}"/scripts/*.sh
   export CI_TRUSTED_DIR
 }
 
@@ -140,7 +148,7 @@ should_skip_non_code_changes() {
     return 1
   fi
 
-  local non_code_regex='^(\.gitignore|\.golangci\.yaml|OWNERS.*|CODEOWNERS|LICENSE.*|NOTICE.*|Makefile|.*\.md|docs/.*|\.github/.*|scripts/ci-common\.sh)$'
+  local non_code_regex='^(\.gitignore|\.golangci\.yaml|OWNERS.*|CODEOWNERS|LICENSE.*|NOTICE.*|Makefile|.*\.md|docs/.*|\.github/.*|scripts/ci-common\.sh|scripts/ci-concourse\.sh|ci/.*)$'
   local pr_head_sha=""
   if [[ -f "${GITHUB_EVENT_PATH:-}" ]]; then
     pr_head_sha=$(jq -r '.pull_request.head.sha // empty' "${GITHUB_EVENT_PATH}")
@@ -174,8 +182,14 @@ should_skip_non_code_changes() {
   fi
 
   local candidate_runs
-  candidate_runs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/integration-test.yaml/runs?branch=${head_ref}&status=completed&per_page=10" \
-    --jq '.workflow_runs[] | select(.conclusion == "success") | "\(.id) \(.head_sha)"' 2>/dev/null || true)
+  candidate_runs=$(
+    {
+      gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/integration-test.yaml/runs?branch=${head_ref}&status=completed&per_page=10" \
+        --jq '.workflow_runs[] | select(.conclusion == "success") | "\(.id) \(.head_sha)"' 2>/dev/null || true
+      gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/integration-test.yaml/runs?status=completed&per_page=10" \
+        --jq '.workflow_runs[] | select(.conclusion == "success") | "\(.id) \(.head_sha)"' 2>/dev/null || true
+    } | awk '!seen[$1]++'
+  )
   if [[ -z "${candidate_runs}" ]]; then
     return 1
   fi
@@ -334,7 +348,7 @@ check_ci_preconditions() {
       exit 1
     fi
 
-    if should_skip_non_code_changes; then
+    if [[ "${CI_WORKFLOW_TYPE:-integration}" != "concourse" ]] && should_skip_non_code_changes; then
       if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
         echo "should_run=false" >>"${GITHUB_OUTPUT}"
       fi
@@ -343,7 +357,8 @@ check_ci_preconditions() {
   fi
 
   if [[ "${GITHUB_EVENT_NAME:-}" == "issue_comment" && -f "${GITHUB_EVENT_PATH:-}" ]]; then
-    local is_pr comment_body comment_user comment_assoc comment_id cmd_line cmd_arg
+    local is_pr comment_body comment_user comment_assoc comment_id cmd_line cmd_arg trigger_cmd
+    trigger_cmd="${CI_COMMENT_TRIGGER:-/test-integration}"
     is_pr=$(jq -r '.issue.pull_request.url // empty' "${GITHUB_EVENT_PATH}")
     comment_body=$(jq -r '.comment.body // empty' "${GITHUB_EVENT_PATH}")
     comment_user=$(jq -r '.comment.user.login // empty' "${GITHUB_EVENT_PATH}")
@@ -352,9 +367,9 @@ check_ci_preconditions() {
     PR_NUMBER=$(jq -r '.issue.number // empty' "${GITHUB_EVENT_PATH}")
     export PR_NUMBER
 
-    cmd_line=$(printf '%s\n' "${comment_body}" | tr -d '\r' | grep -E '^[[:space:]]*/test-integration([[:space:]]|$)' | head -n 1 || true)
+    cmd_line=$(printf '%s\n' "${comment_body}" | tr -d '\r' | grep -E "^[[:space:]]*${trigger_cmd}([[:space:]]|\$)" | head -n 1 || true)
     if [[ -z "${is_pr}" || -z "${cmd_line}" ]]; then
-      echo "Comment does not contain a '/test-integration' command line on a pull request. Skipping."
+      echo "Comment does not contain a '${trigger_cmd}' command line on a pull request. Skipping."
       if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
         echo "should_run=false" >>"${GITHUB_OUTPUT}"
       fi
@@ -362,18 +377,20 @@ check_ci_preconditions() {
     fi
 
     if ! is_authorized_maintainer "${comment_user}" "${comment_assoc}"; then
-      echo "::error::User '${comment_user}' (author_association='${comment_assoc}') is not authorized to trigger '/test-integration'."
+      echo "::error::User '${comment_user}' (author_association='${comment_assoc}') is not authorized to trigger '${trigger_cmd}'."
       exit 1
     fi
 
-    cmd_arg=$(printf '%s\n' "${cmd_line}" | sed -E 's/^[[:space:]]*\/test-integration[[:space:]]*//; s/^--filter=//; s/[[:space:]]*$//')
-    if [[ -n "${cmd_arg}" && -z "${CPI_INTEG_FILTER:-}" ]]; then
-      if [[ "${cmd_arg}" =~ ^[A-Za-z0-9_|^$.*+-]+$ ]]; then
-        CPI_INTEG_FILTER="${cmd_arg}"
-        export CPI_INTEG_FILTER
-      else
-        echo "::error::Invalid filter argument '${cmd_arg}' in '/test-integration' comment."
-        exit 1
+    if [[ "${trigger_cmd}" == "/test-integration" ]]; then
+      cmd_arg=$(printf '%s\n' "${cmd_line}" | sed -E 's/^[[:space:]]*\/test-integration[[:space:]]*//; s/^--filter=//; s/[[:space:]]*$//')
+      if [[ -n "${cmd_arg}" && -z "${CPI_INTEG_FILTER:-}" ]]; then
+        if [[ "${cmd_arg}" =~ ^[A-Za-z0-9_|^$.*+-]+$ ]]; then
+          CPI_INTEG_FILTER="${cmd_arg}"
+          export CPI_INTEG_FILTER
+        else
+          echo "::error::Invalid filter argument '${cmd_arg}' in '/test-integration' comment."
+          exit 1
+        fi
       fi
     fi
 
@@ -569,6 +586,63 @@ setup_cpi_config() {
 
   if ! jq -e '.gdch.org and .gdch.serviceAccountPKConfig.project and .gdch.serviceAccountPKConfig.privateKey' "${config_file}" >/dev/null 2>&1; then
     echo "::error::GDC CPI configuration at ${config_file} is invalid JSON or missing required fields (.gdch.org, .gdch.serviceAccountPKConfig)."
+    exit 1
+  fi
+}
+
+# setup_gcp_sa_key writes a GCP service account JSON key to disk, masks all
+# secret lines in GitHub Actions logs, and validates required fields.
+setup_gcp_sa_key() {
+  local xtrace_was_set=false
+  if [[ "$-" == *x* ]]; then
+    xtrace_was_set=true
+    set +x
+  fi
+
+  local key_file="$1"
+  local raw_key="${2:-}"
+
+  if [[ -n "${raw_key}" ]]; then
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        if [[ -n "${line}" && "${line}" != "{" && "${line}" != "}" ]]; then
+          echo "::add-mask::${line}"
+        fi
+      done <<<"${raw_key}"
+
+      local secret_values
+      secret_values=$(printf '%s' "${raw_key}" | jq -r '
+        [
+          .private_key // empty,
+          .private_key_id // empty,
+          .client_id // empty
+        ][] | select(length > 0)
+      ' 2>/dev/null || true)
+      while IFS= read -r sline; do
+        sline="${sline#"${sline%%[![:space:]]*}"}"
+        sline="${sline%"${sline##*[![:space:]]}"}"
+        if [[ -n "${sline}" ]]; then
+          echo "::add-mask::${sline}"
+        fi
+      done <<<"${secret_values}"
+    fi
+
+    mkdir -p "$(dirname "${key_file}")"
+    umask 077
+    printf '%s\n' "${raw_key}" >"${key_file}"
+  elif [[ ! -s "${key_file}" ]]; then
+    echo "::error::GCP service account key not found at ${key_file} and CFBOSH_CICD_SERVICE_ACCOUNT_KEY is not set."
+    exit 1
+  fi
+
+  if [[ "${xtrace_was_set}" == "true" ]]; then
+    set -x
+  fi
+
+  if ! jq -e '.client_email and .private_key and .project_id' "${key_file}" >/dev/null 2>&1; then
+    echo "::error::GCP service account key at ${key_file} is invalid JSON or missing required fields (.client_email, .private_key, .project_id)."
     exit 1
   fi
 }

@@ -7,8 +7,6 @@ name: Presubmit Integration Test
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches:
-      - main
     paths-ignore:
       - '**.md'
       - 'docs/**'

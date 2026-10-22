@@ -37,7 +37,7 @@ For background on creating BOSH releases, see [Create a Release](https://bosh.io
 
 ```text
 .
-├── .github/workflows  # GitHub Actions CI and presubmit integration test workflows
+├── .github/workflows  # GitHub Actions CI, presubmit integration test, and Concourse workflows
 ├── config             # Configuration of the release (blobs, final release specs)
 ├── jobs               # BOSH job definitions (gdc_cpi)
 ├── packages           # BOSH package definitions (bosh-gdc-cpi)
@@ -46,6 +46,7 @@ For background on creating BOSH releases, see [Create a Release](https://bosh.io
 │   ├── pkg            # CPI packages (vm, disk, stemcell, auth, client, gdc, etc.)
 │   ├── tools          # CPI configuration file generator (gen_config_file.sh)
 │   └── integration    # Integration test suite against live GDC environments
+├── ci                 # Concourse deployment pipeline (ci/pipeline/, ci/configure.sh)
 ├── scripts            # Build and CI helper scripts
 └── Makefile           # Standard developer build, lint, test, and release targets
 ```
@@ -156,6 +157,10 @@ Pull requests targeting `main` automatically run:
    - Runs live multizone integration tests against the `cfbosh-staging` GitHub environment.
    - Automatically selects the relevant integration test suite based on modified paths (`bosh-cpi/pkg/disk/*` -> `TestMultizoneDiskMethods`, `bosh-cpi/pkg/vm/*` -> `TestMultizoneVMAndDiskMethods`, `bosh-cpi/pkg/stemcell/*` -> `TestMultizoneStemcellMethods`, or `TestMultizone` when multiple packages or shared files change).
    - Supports commit message directives (`[skip-cpi-integ]` and `[cpi-integ-filter: <FILTER>]`), PR comments (`/test-integration [FILTER]`), and manual `workflow_dispatch` runs.
+
+3. **Concourse CI/CD (`.github/workflows/concourse.yaml`)**:
+   - Validates and configures the Cloud Foundry BOSH deployment pipeline (`ci/pipeline/` via `ci/configure.sh`) using the `cfbosh-staging` GitHub environment (`CFBOSH_CICD_SERVICE_ACCOUNT_KEY`).
+   - Runs in `--dry-run` validation mode on pull requests modifying `ci/**`, `scripts/ci-concourse.sh`, or `.github/workflows/concourse.yaml` (or when triggered via `/test-concourse`), applies updates on push to `main` or manual `workflow_dispatch`, and rotates the Concourse GCP service account key on a weekly schedule.
 
 ## Community & Governance
 

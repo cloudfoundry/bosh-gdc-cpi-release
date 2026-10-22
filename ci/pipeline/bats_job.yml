@@ -1,0 +1,217 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+- type: replace
+  path: /jobs/name=run-bats
+  value:
+    name: run-bats
+    # No concurrent execution
+    serial: true
+    # bats-lock: new BOSH deployments wait while BATs runs.
+    # deployment-lock: BATs and cf-deployment share the Director, and BATs
+    # fails if the Director has any task in progress, so they take turns.
+    serial_groups: [bats-lock, deployment-lock]
+    plan:
+    - get: cicd-deployment-logs-bosh
+      trigger: true
+      passed: [bosh-deployment]
+    - get: cfbosh-image
+    - get: cicd-deployment-artifacts-bosh
+      params:
+        unpack: true
+    - get: noble-stemcells
+    # BATs replaces the Director's cloud config with its own z1-only config. Without a
+    # restore, later cf-deployment runs fail with "AZ 'z2' not found in cloud config".
+    # Snapshot it in its own task so the restore in `ensure` has it even if BATs errors.
+    - task: snapshot-cloud-config
+      image: cfbosh-image
+      config:
+        platform: linux
+        inputs:
+        - name: cicd-deployment-artifacts-bosh
+        outputs:
+        - name: cloud-config-snapshot
+        run:
+          path: bash
+          args:
+          - -c
+          - |
+            set -euo pipefail
+            assets_dir="$(pwd)/cicd-deployment-artifacts-bosh/bosh-deployment-assets"
+            source "${assets_dir}/gdch/scripts/set-env-var-on-long-running-cf.sh"
+            vars_store="${assets_dir}/vars_store_${DIRECTOR_VM_NAME}.yml"
+            export BOSH_ENVIRONMENT="${DIRECTOR_DNS}:25555"
+            export BOSH_CA_CERT="$(bosh int "${vars_store}" --path /default_ca/ca)"
+            export BOSH_CLIENT=admin
+            export BOSH_CLIENT_SECRET="$(bosh int "${vars_store}" --path /admin_password)"
+
+            snapshot=cloud-config-snapshot/cloud-config.yml
+            if bosh configs --type=cloud --name=default --json | jq -e '.Tables[0].Rows | length > 0' >/dev/null; then
+              bosh cloud-config >"${snapshot}"
+              echo "[INFO] Saved Director cloud config ($(wc -l <"${snapshot}") lines)"
+            else
+              : >"${snapshot}"
+              echo "[INFO] Director has no cloud config; nothing to restore after BATs"
+            fi
+
+            # Runtime configs (e.g. CF's bosh-dns addon) would also land on the BAT VMs and break BATs
+            # that expect only the BAT jobs under monit. Save each one, then remove it for the BATs run.
+            mkdir -p cloud-config-snapshot/runtime
+            for name in $(bosh configs --type=runtime --json | jq -r '.Tables[0].Rows[].name'); do
+              bosh runtime-config --name="${name}" >"cloud-config-snapshot/runtime/${name}.yml"
+              bosh -n delete-config --type=runtime --name="${name}"
+              echo "[INFO] Saved and removed runtime config '${name}' for the BATs run"
+            done
+    - task: run-bats
+      image: cfbosh-image
+      # Express suite takes ~1.5 h; cap the task so a stuck run cannot hold the bats-lock indefinitely
+      timeout: 3h
+      config:
+        platform: linux
+        inputs:
+        - name: cicd-deployment-logs-bosh
+        - name: cicd-deployment-artifacts-bosh
+        - name: noble-stemcells
+        outputs:
+        - name: log_dir
+        params:
+          GCS_SERVICE_ACCOUNT_KEY: ((credentials.cfbosh-cicd-sa_key))
+        run:
+          path: bash
+          args:
+          - -cx
+          - |
+            set -e
+
+            root_dir=$(pwd)
+
+            log_file=$(find cicd-deployment-logs-bosh -type f -name "log_*.md" -printf "%f")
+            echo "[INFO] Got deployment log: ${log_file}"
+            cp cicd-deployment-logs-bosh/${log_file} log_dir/${log_file}
+
+            build_id=$(awk '/Build ID:/ {print $4}' log_dir/${log_file})
+            echo "[INFO] Got build ID: ${build_id}"
+
+            cp -r cicd-deployment-artifacts-bosh/ cicd-deployment-artifacts/
+
+            run_id=$(date +%s)
+            echo "[INFO] Start running BOSH acceptance tests (BATS) with run ID ${run_id}"
+
+            noble_stemcell_tarball=$(find noble-stemcells -type f -name "bosh-stemcell-*-gdch-kvm-ubuntu-noble.tgz" -printf "%f")
+            echo "* BATS Noble stemcell tarball: ${noble_stemcell_tarball}" >> log_dir/${log_file}
+
+            echo "[INFO] Authenticating Concourse container as CI Service Account to access the CI GCS bucket"
+            set +x # Hide service account key - otherwise prints to logs
+            printf '%s' "$GCS_SERVICE_ACCOUNT_KEY" > /tmp/gcs_key.json
+            set -x
+            gcloud auth activate-service-account --key-file=/tmp/gcs_key.json
+            export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcs_key.json
+
+            cd cicd-deployment-artifacts/bosh-deployment-assets/gdch/scripts
+            source ./set-env-var-on-long-running-cf.sh
+
+            export BOSH_DEPLOYMENT_ASSETS_DIR="${root_dir}/cicd-deployment-artifacts/bosh-deployment-assets"
+            export KUBECONFIGS_DIRECTORY="${BOSH_DEPLOYMENT_ASSETS_DIR}/kubeconfigs"
+            export PATH_TO_BOSH_VARS_STORE_FILE="${BOSH_DEPLOYMENT_ASSETS_DIR}/vars_store_${DIRECTOR_VM_NAME}.yml"
+            export PATH_TO_GDCH_STEMCELL_TARBALL="${root_dir}/noble-stemcells/${noble_stemcell_tarball}"
+            export BAT_SUBNET_CIDR="10.193.4.64/28"
+            export JUMPHOST_IMAGE="ubuntu-22.04-v20250809-gdch"
+
+            echo "[INFO] Initializing GDC session and fetching fresh admin kubeconfigs"
+            ./setup-session.sh --is-long-running-cf --non-interactive --keep-gdcloud-config
+
+            echo "[INFO] Creating BOSH environment alias '${BOSH_ENV_ALIAS}' for the BOSH Director created by bosh-deployment"
+            bosh alias-env "${BOSH_ENV_ALIAS}" -e "${DIRECTOR_DNS}:25555" --ca-cert <(bosh int "${PATH_TO_BOSH_VARS_STORE_FILE}" --path /default_ca/ca)
+
+            bats_run_dir="${root_dir}/cicd-deployment-artifacts/bats-run"
+            mkdir -p "${bats_run_dir}"
+
+            echo "[INFO] Running BOSH acceptance tests (GDCH express suite)"
+            # --patch-no-delete-stemcell: upstream BATs teardown deletes the stemcell it used. On GDCH the CPI
+            # maps that to deleting the VirtualMachineImage, which is the same image create-env.sh's state
+            # references for the Director VM; deleting it breaks the next bosh-deployment run.
+            set +e
+            ./run-bats.sh --gdch-express --patch-no-delete-stemcell --no-color 2>&1 | tee /tmp/run-bats_${run_id}.log
+            bats_exit_code=${PIPESTATUS[0]}
+            set -e
+
+            # Keep only the rspec summary in the shared artifact; the full log (which echoes the rendered
+            # BAT manifest) stays in the Concourse build output.
+            grep -E "BATs example (started|passed|failed)|examples,|Finished in|^rspec ./spec" /tmp/run-bats_${run_id}.log > "${bats_run_dir}/summary_${run_id}.txt" || true
+            echo "exit_code=${bats_exit_code}" >> "${bats_run_dir}/summary_${run_id}.txt"
+
+            cd ${root_dir}
+            if [ "${bats_exit_code}" -ne 0 ]; then
+              echo "-> BATS run ${run_id}: FAILED (exit code ${bats_exit_code})" >> log_dir/${log_file}
+            else
+              echo "-> BATS run ${run_id}: DONE" >> log_dir/${log_file}
+            fi
+
+            cd cicd-deployment-artifacts/
+
+            deployment_artifact=artifacts_${build_id}_bats-${run_id}.tar.gz
+            tar -czvf ${deployment_artifact} bosh-deployment-assets/ \
+            bats-run/
+            cp ${deployment_artifact} ${root_dir}/log_dir/
+
+            cd ${root_dir}
+            echo "-> Prepared artifacts ${deployment_artifact} with BATS run" >> log_dir/${log_file}
+
+            echo "[INFO] Updated deployment log log_dir/${log_file}"
+            exit ${bats_exit_code}
+      ensure:
+        task: restore-cloud-config
+        image: cfbosh-image
+        config:
+          platform: linux
+          inputs:
+          - name: cicd-deployment-artifacts-bosh
+          - name: cloud-config-snapshot
+          run:
+            path: bash
+            args:
+            - -c
+            - |
+              set -euo pipefail
+              assets_dir="$(pwd)/cicd-deployment-artifacts-bosh/bosh-deployment-assets"
+              source "${assets_dir}/gdch/scripts/set-env-var-on-long-running-cf.sh"
+              vars_store="${assets_dir}/vars_store_${DIRECTOR_VM_NAME}.yml"
+              export BOSH_ENVIRONMENT="${DIRECTOR_DNS}:25555"
+              export BOSH_CA_CERT="$(bosh int "${vars_store}" --path /default_ca/ca)"
+              export BOSH_CLIENT=admin
+              export BOSH_CLIENT_SECRET="$(bosh int "${vars_store}" --path /admin_password)"
+
+              for rc in cloud-config-snapshot/runtime/*.yml; do
+                [ -s "${rc}" ] || continue
+                name=$(basename "${rc}" .yml)
+                echo "[INFO] Restoring runtime config '${name}' removed for the BATs run"
+                bosh -n update-runtime-config --name="${name}" "${rc}"
+              done
+
+              snapshot=cloud-config-snapshot/cloud-config.yml
+              if [ ! -s "${snapshot}" ]; then
+                echo "[INFO] No cloud config snapshot; skipping restore"
+                exit 0
+              fi
+              echo "[INFO] Restoring the Director cloud config that BATs replaced"
+              bosh -n update-cloud-config "${snapshot}"
+    - put: cicd-deployment-artifacts-bats
+      params:
+        file: log_dir/artifacts_*_bats-*.tar.gz
+    - put: cicd-deployment-logs-bats
+      params:
+        file: log_dir/log_*.md
+    - put: cicd-deployment-logs
+      params:
+        file: log_dir/log_*.md
