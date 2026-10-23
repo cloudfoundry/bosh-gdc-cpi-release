@@ -1,0 +1,54 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Concourse deployment pipeline jobs skeleton in order
+- type: replace
+  path: /jobs?
+  value:
+    - name: start-deployments
+    - name: bosh-bootstrap
+    - name: bosh-deployment
+    - name: run-bats
+    - name: cf-deployment
+    - name: run-cats
+    - name: pre-release-fan-in
+    - name: promote-candidate
+    - name: report-orphaned-vms
+
+# Job groups (UI tabs)
+- type: replace
+  path: /groups?
+  value:
+    - name: all
+      jobs: [start-deployments, bosh-bootstrap, bosh-deployment, run-bats, cf-deployment, run-cats, pre-release-fan-in, promote-candidate, report-orphaned-vms]
+    - name: deploy
+      jobs: [start-deployments, bosh-bootstrap, bosh-deployment, cf-deployment]
+    - name: acceptance-tests
+      jobs: [run-bats, run-cats]
+    - name: release
+      jobs: [pre-release-fan-in, promote-candidate]
+    - name: housekeeping
+      jobs: [report-orphaned-vms]
+
+# Remove unused resources defined from shared base.yml
+- type: remove
+  path: /resources/name=cicd-deployment-logs-cf-load-tests
+- type: remove
+  path: /resources/name=cicd-deployment-logs-teardown-deployments
+- type: remove
+  path: /resources/name=cicd-deployment-artifacts-cf-load-tests
+- type: remove
+  path: /resources/name=cicd-deployment-artifacts-teardown-deployments
+- type: remove
+  path: /resources/name=mwf-cron-schedule

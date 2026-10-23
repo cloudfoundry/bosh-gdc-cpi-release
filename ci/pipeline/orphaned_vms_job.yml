@@ -1,0 +1,113 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Reports GDC VMs created by this Director's CPI that the Director no longer tracks
+# (orphans). Orphans appear when the Director loses its state; they keep consuming
+# quota and IPs and break later deploys. Report-only: it lists them and fails the job
+# so they get noticed; it never deletes anything. It does not gate the release.
+- type: replace
+  path: /jobs/name=report-orphaned-vms
+  value:
+    name: report-orphaned-vms
+    # No concurrent execution
+    serial: true
+    # deployment-lock: never overlap a deploy or BATs, whose in-flight VMs are not
+    # yet tracked by the Director and would show up as false positives.
+    serial_groups: [deployment-lock]
+    plan:
+    - get: cicd-deployment-logs-cf
+      trigger: true
+      passed: [cf-deployment]
+    - get: cfbosh-image
+    - get: cicd-deployment-artifacts-cf
+      params:
+        unpack: true
+    - task: report-orphaned-vms
+      image: cfbosh-image
+      config:
+        platform: linux
+        inputs:
+        - name: cicd-deployment-logs-cf
+        - name: cicd-deployment-artifacts-cf
+        params:
+          GCS_SERVICE_ACCOUNT_KEY: ((credentials.cfbosh-cicd-sa_key))
+          # VMs younger than this are skipped: a create_vm may still be in flight.
+          ORPHAN_MIN_AGE_SECONDS: "1800"
+          # Fail the job when orphans are found, so they are visible in the pipeline.
+          FAIL_ON_ORPHANS: "true"
+        run:
+          path: bash
+          args:
+          - -c
+          - |
+            set -euo pipefail
+
+            root_dir=$(pwd)
+            cp -r cicd-deployment-artifacts-cf/ cicd-deployment-artifacts/
+
+            echo "[INFO] Authenticating Concourse container as CI Service Account to access the CI GCS bucket"
+            printf '%s' "$GCS_SERVICE_ACCOUNT_KEY" >/tmp/gcs_key.json
+            gcloud auth activate-service-account --key-file=/tmp/gcs_key.json
+            export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcs_key.json
+
+            cd "${root_dir}/cicd-deployment-artifacts/bosh-deployment-assets/gdch/scripts"
+            source ./set-env-var-on-long-running-cf.sh
+            export BOSH_DEPLOYMENT_ASSETS_DIR="${root_dir}/cicd-deployment-artifacts/bosh-deployment-assets"
+            export KUBECONFIGS_DIRECTORY="${BOSH_DEPLOYMENT_ASSETS_DIR}/kubeconfigs"
+            vars_store="${BOSH_DEPLOYMENT_ASSETS_DIR}/vars_store_${DIRECTOR_VM_NAME}.yml"
+
+            echo "[INFO] Initializing GDC session and fetching fresh admin kubeconfigs"
+            ./setup-session.sh --is-long-running-cf --non-interactive --keep-gdcloud-config
+
+            bosh alias-env "${BOSH_ENV_ALIAS}" -e "${DIRECTOR_DNS}:25555" --ca-cert <(bosh int "${vars_store}" --path /default_ca/ca)
+            export BOSH_CLIENT=admin
+            BOSH_CLIENT_SECRET=$(bosh int "${vars_store}" --path /admin_password)
+            export BOSH_CLIENT_SECRET
+
+            # VM CIDs the Director tracks, across all deployments.
+            bosh -e "${BOSH_ENV_ALIAS}" vms --json | jq -r '.Tables[].Rows[].vm_cid' | sort -u >/tmp/tracked.txt
+            echo "[INFO] Director tracks $(wc -l </tmp/tracked.txt) VMs"
+
+            # VMs this Director's CPI created (label director=<director name>), per zone.
+            now=$(date +%s)
+            : >/tmp/orphans.tsv
+            for kubeconfig in "${KUBECONFIGS_DIRECTORY}"/pa_infra_mp_*_kubeconfig; do
+              zone=$(basename "${kubeconfig}" | sed -E 's/^pa_infra_mp_(.*)_kubeconfig$/\1/')
+              kubectl --kubeconfig "${kubeconfig}" -n "${PROJECT}" get virtualmachines \
+                -l "director=${DIRECTOR_VM_NAME}" -o json |
+                jq -r '.items[] | [.metadata.name, .metadata.creationTimestamp,
+                  (.metadata.labels.deployment // "-"), (.metadata.labels.instance_group // "-"),
+                  (.status.state // "-")] | @tsv' |
+                while IFS=$'\t' read -r name created deployment group state; do
+                  [[ -z "${name}" ]] && continue
+                  grep -qxF "${name}" /tmp/tracked.txt && continue
+                  age=$(( now - $(date -d "${created}" +%s) ))
+                  if (( age < ORPHAN_MIN_AGE_SECONDS )); then
+                    echo "[INFO] Skipping untracked VM ${name} (${zone}): only ${age}s old"
+                    continue
+                  fi
+                  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${zone}" "${name}" "${deployment}" "${group}" "${state}" "${created}" >>/tmp/orphans.tsv
+                done
+            done
+
+            count=$(wc -l </tmp/orphans.tsv)
+            if (( count == 0 )); then
+              echo "[INFO] No orphaned VMs found"
+              exit 0
+            fi
+            echo "[WARN] Found ${count} orphaned VM(s) (not tracked by Director ${DIRECTOR_VM_NAME}):"
+            (printf 'ZONE\tVM\tDEPLOYMENT\tINSTANCE_GROUP\tSTATE\tCREATED\n'; cat /tmp/orphans.tsv) | column -t -s $'\t'
+            echo "[WARN] Report-only: nothing was deleted. See the TROUBLESHOOTING guide for how to clean up."
+            [[ "${FAIL_ON_ORPHANS}" == "true" ]] && exit 1
+            exit 0
