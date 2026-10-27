@@ -2,17 +2,18 @@
 bin/
 src/
 .tools/
-*.tgz
 tmp/
 .dev_builds/
 dev_releases/
 .final_builds/
 .blobs/
 
-# Test, vendor, and coverage artifacts
-vendor/
+# Test and coverage artifacts
 coverage/
+/cfbosh_coverage_report/
+/gardener_coverage_report/
 /testlist
+e2e/gpctest/test/*-kubeconfig
 
 # Backups and temporary files
 *.orig

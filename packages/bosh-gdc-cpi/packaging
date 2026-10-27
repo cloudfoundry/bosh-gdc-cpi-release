@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+
+# deliver CPI binary to BOSH working directory(https://bosh.io/docs/create-release/#pkg-scripts)
+
+set -e
+
+# set directories
+BOSH_INSTALL_TARGET=${BOSH_INSTALL_TARGET:-/var/vcap/packages/bosh-gdc-cpi}
+
+# create bin directory if not existed
+mkdir -p ${BOSH_INSTALL_TARGET}/bin
+
+platform=$(uname | tr '[:upper:]' '[:lower:]')
+cp bosh-gdc-cpi/cpi_binary_${platform} ${BOSH_INSTALL_TARGET}/bin/cpi_${platform}
