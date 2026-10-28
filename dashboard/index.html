@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CFBOSH GDC CPI Release Pipeline | CI/CD Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Outfit', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            bgPrimary: '#0b0f19',
+            bgCard: '#111827',
+            bgCardHover: '#1f2937',
+            accentBlue: '#38bdf8',
+            accentGreen: '#10b981',
+            accentRed: '#ef4444',
+            accentAmber: '#f59e0b',
+            accentPurple: '#a855f7',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #0b0f19;
+      background-image:
+        radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.08) 0px, transparent 50%),
+        radial-gradient(at 100% 0%, rgba(16, 185, 129, 0.06) 0px, transparent 50%);
+      background-attachment: fixed;
+    }
+    .glass-card {
+      background: rgba(17, 24, 39, 0.75);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+    }
+    .stage-pill {
+      transition: all 0.2s ease;
+    }
+    .stage-pill:hover {
+      transform: translateY(-2px);
+    }
+    @keyframes pulse-slow {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+    .animate-pulse-slow {
+      animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+  </style>
+</head>
+<body class="text-slate-200 font-sans antialiased min-h-screen flex flex-col">
+
+  <!-- Top Header -->
+  <header class="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-3.5">
+        <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-sky-500 to-emerald-600 flex items-center justify-center shadow-lg shadow-sky-500/20">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+          </svg>
+        </div>
+        <div>
+          <div class="flex items-center space-x-2">
+            <h1 class="font-bold text-lg tracking-tight text-white">CFBOSH GDC CPI</h1>
+            <span class="text-xs px-2 py-0.5 rounded-full font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20">Release Pipeline</span>
+          </div>
+          <p class="text-xs text-slate-400">Concourse Deployment Verification &amp; SemVer BOSH CPI Release Automation</p>
+        </div>
+      </div>
+
+      <div class="flex items-center space-x-4">
+        <div id="last-updated" class="text-xs text-slate-400 hidden sm:block">Loading telemetry...</div>
+        <a href="https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases"
+           target="_blank" rel="noopener noreferrer"
+           class="inline-flex items-center space-x-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition">
+          <span>Releases</span>
+        </a>
+        <a href="https://github.com/cloudfoundry/bosh-gdc-cpi-release/actions/workflows/release-pipeline.yaml"
+           target="_blank" rel="noopener noreferrer"
+           class="inline-flex items-center space-x-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/30 transition">
+          <span>Trigger / View Actions</span>
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+          </svg>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full space-y-8">
+
+    <!-- KPI Summary Cards -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div class="glass-card rounded-xl p-5 flex items-center justify-between">
+        <div>
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Total Runs</p>
+          <p id="kpi-total" class="text-3xl font-bold text-white mt-1">--</p>
+          <p id="kpi-sub-total" class="text-xs text-slate-500 mt-1">Biweekly (1st &amp; 15th) + Manual</p>
+        </div>
+        <div class="w-11 h-11 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+          </svg>
+        </div>
+      </div>
+
+      <div class="glass-card rounded-xl p-5 flex items-center justify-between">
+        <div>
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Success Rate</p>
+          <p id="kpi-rate" class="text-3xl font-bold text-emerald-400 mt-1">--%</p>
+          <p id="kpi-sub-rate" class="text-xs text-slate-500 mt-1">Concourse + Release</p>
+        </div>
+        <div class="w-11 h-11 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+        </div>
+      </div>
+
+      <div class="glass-card rounded-xl p-5 flex items-center justify-between">
+        <div>
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Avg Duration</p>
+          <p id="kpi-duration" class="text-3xl font-bold text-sky-400 mt-1">--</p>
+          <p class="text-xs text-slate-500 mt-1">Build, Scan, Concourse &amp; Publish</p>
+        </div>
+        <div class="w-11 h-11 rounded-xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+        </div>
+      </div>
+
+      <div class="glass-card rounded-xl p-5 flex items-center justify-between">
+        <div>
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Latest CPI Release</p>
+          <p id="kpi-version" class="text-2xl font-bold font-mono text-purple-400 mt-1">--</p>
+          <p id="kpi-sub-version" class="text-xs text-slate-500 mt-1 truncate max-w-[180px]">SemVer BOSH Release</p>
+        </div>
+        <div class="w-11 h-11 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"></path>
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- Latest Run Stage Progress Banner -->
+    <div id="latest-run-banner" class="glass-card rounded-xl p-6 hidden">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-800">
+        <div class="flex items-center space-x-3">
+          <span id="latest-status-badge" class="px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider"></span>
+          <div>
+            <div class="flex items-center space-x-2">
+              <h2 class="text-base font-semibold text-white" id="latest-title">Latest Pipeline Execution</h2>
+              <span id="latest-version-pill" class="font-mono text-xs px-2 py-0.5 rounded bg-slate-800 text-sky-400 border border-slate-700"></span>
+              <span id="latest-skip-concourse-pill" class="hidden font-mono text-xs px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">skip_concourse=true</span>
+            </div>
+            <p class="text-xs text-slate-400 mt-0.5" id="latest-meta"></p>
+          </div>
+        </div>
+        <div class="flex items-center space-x-2">
+          <a id="latest-release-link" href="#" target="_blank" rel="noopener noreferrer"
+             class="text-xs font-medium text-emerald-400 hover:text-emerald-300 inline-flex items-center space-x-1 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20 transition">
+            <span>GitHub Release</span>
+          </a>
+          <a id="latest-link" href="#" target="_blank" rel="noopener noreferrer"
+             class="text-xs font-medium text-sky-400 hover:text-sky-300 inline-flex items-center space-x-1 bg-sky-500/10 px-3 py-1.5 rounded-lg border border-sky-500/20 transition">
+            <span>View Workflow Run</span>
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+            </svg>
+          </a>
+        </div>
+      </div>
+
+      <!-- 4 Stage Progress Visualization -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-5" id="latest-stages-grid"></div>
+    </div>
+
+    <!-- Filter & Search Controls -->
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div class="flex flex-wrap items-center gap-2">
+        <button onclick="setFilter('all')" id="filter-all" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-sky-500 text-slate-950 transition">All Runs</button>
+        <button onclick="setFilter('release')" id="filter-release" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800/80 text-slate-300 hover:bg-slate-700 transition">Release</button>
+        <button onclick="setFilter('snapshot')" id="filter-snapshot" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800/80 text-slate-300 hover:bg-slate-700 transition">Snapshot</button>
+        <button onclick="setFilter('success')" id="filter-success" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800/80 text-slate-300 hover:bg-slate-700 transition">Passed</button>
+        <button onclick="setFilter('failure')" id="filter-failure" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800/80 text-slate-300 hover:bg-slate-700 transition">Failed</button>
+      </div>
+
+      <div class="relative w-full sm:w-64">
+        <input type="text" id="search-input" oninput="renderRuns()" placeholder="Search version, commit, run #..."
+               class="w-full bg-slate-900/90 border border-slate-700/80 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500">
+        <svg class="w-4 h-4 text-slate-500 absolute left-3 top-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Execution History Table -->
+    <div class="glass-card rounded-xl overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-white">CFBOSH GDC Release Pipeline Execution History</h3>
+        <span id="showing-count" class="text-xs text-slate-400">0 runs</span>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="border-b border-slate-800/80 text-[11px] font-semibold uppercase tracking-wider text-slate-400 bg-slate-900/40">
+              <th class="py-3.5 px-4 cursor-pointer select-none hover:text-sky-400 transition" onclick="toggleRunSort()" title="Sort by #run">
+                <span class="inline-flex items-center space-x-1">
+                  <span>#Run</span>
+                  <span id="run-sort-indicator" class="text-sky-400">&#9660;</span>
+                </span>
+              </th>
+              <th class="py-3.5 px-4">Mode</th>
+              <th class="py-3.5 px-4">Status</th>
+              <th class="py-3.5 px-4">SemVer Version</th>
+              <th class="py-3.5 px-4">Commit</th>
+              <th class="py-3.5 px-4">Stage Breakdown (Build / Concourse / Scan / Publish)</th>
+              <th class="py-3.5 px-4">Duration</th>
+              <th class="py-3.5 px-4">Trigger</th>
+              <th class="py-3.5 px-4">Executed At</th>
+              <th class="py-3.5 px-4 text-right">Links</th>
+            </tr>
+          </thead>
+          <tbody id="runs-tbody" class="divide-y divide-slate-800/60 text-xs">
+            <tr>
+              <td colspan="10" class="py-12 text-center text-slate-500">Loading pipeline run history...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t border-slate-800/80 py-5 mt-12 text-center text-xs text-slate-500">
+    <div class="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+      <span>CFBOSH GDC CPI Release Pipeline &bull; Cloud Foundry Foundation</span>
+      <span>Powered by GitHub Actions, Concourse CI &amp; GitHub Pages</span>
+    </div>
+  </footer>
+
+  <script>
+    const STAGE_LABELS = {
+      build_candidate: '1. Build & Verify CPI',
+      concourse: '2. Concourse Pipeline',
+      vuln_scan: '3. Vulnerability Scan',
+      release: '4. GitHub & GCS Release'
+    };
+
+    const GITHUB_REPO = 'cloudfoundry/bosh-gdc-cpi-release';
+    const WORKFLOW_FILE = 'release-pipeline.yaml';
+
+    let allRuns = [];
+    let staticRuns = [];
+    let currentFilter = 'all';
+    let sortAscending = false;
+
+    function getRunNumberValue(run) {
+      const match = String(run?.run_number || '').match(/\d+/);
+      return match ? parseInt(match[0], 10) : 0;
+    }
+
+    function sortRunsByNumber(runs, ascending = false) {
+      return [...runs].sort((a, b) => {
+        const diff = getRunNumberValue(b) - getRunNumberValue(a);
+        return ascending ? -diff : diff;
+      });
+    }
+
+    function toggleRunSort() {
+      sortAscending = !sortAscending;
+      const indicator = document.getElementById('run-sort-indicator');
+      if (indicator) {
+        indicator.innerHTML = sortAscending ? '&#9650;' : '&#9660;';
+      }
+      renderRuns();
+    }
+
+    function getStatusStyle(status) {
+      const s = (status || '').toLowerCase();
+      if (s === 'success' || s === 'passed') {
+        return {
+          badge: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30',
+          dot: 'bg-emerald-400',
+          text: 'Passed',
+          cardBorder: 'border-emerald-500/30 bg-emerald-500/5'
+        };
+      }
+      if (s === 'failure' || s === 'failed') {
+        return {
+          badge: 'bg-red-500/15 text-red-400 border border-red-500/30',
+          dot: 'bg-red-400',
+          text: 'Failed',
+          cardBorder: 'border-red-500/30 bg-red-500/5'
+        };
+      }
+      if (s === 'running' || s === 'in_progress' || s === 'queued') {
+        return {
+          badge: 'bg-sky-500/15 text-sky-400 border border-sky-500/30 animate-pulse-slow',
+          dot: 'bg-sky-400 animate-ping',
+          text: 'Running',
+          cardBorder: 'border-sky-500/40 bg-sky-500/10'
+        };
+      }
+      if (s === 'pending') {
+        return {
+          badge: 'bg-slate-500/15 text-slate-400 border border-slate-500/30',
+          dot: 'bg-slate-500',
+          text: 'Pending',
+          cardBorder: 'border-slate-700/60 bg-slate-800/30'
+        };
+      }
+      return {
+        badge: 'bg-slate-500/15 text-slate-400 border border-slate-500/30',
+        dot: 'bg-slate-400',
+        text: 'Skipped',
+        cardBorder: 'border-slate-700/60 bg-slate-800/30'
+      };
+    }
+
+    function formatDate(iso) {
+      if (!iso) return '--';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return d.toLocaleString(undefined, {
+        month: 'short', day: 'numeric', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      });
+    }
+
+    function formatDurationSec(sec) {
+      if (!sec || isNaN(sec) || sec < 0) return '--';
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      return `${m}m ${s}s`;
+    }
+
+    function updateKPIs(runs) {
+      const total = runs.length;
+      document.getElementById('kpi-total').textContent = total;
+      if (total === 0) {
+        const rateEl = document.getElementById('kpi-rate');
+        rateEl.textContent = '--%';
+        rateEl.className = 'text-3xl font-bold text-emerald-400 mt-1';
+        document.getElementById('kpi-sub-rate').textContent = 'Concourse + Release';
+        document.getElementById('kpi-duration').textContent = '--';
+        document.getElementById('kpi-version').textContent = '--';
+        document.getElementById('kpi-sub-version').textContent = 'SemVer BOSH Release';
+        document.getElementById('latest-run-banner').classList.add('hidden');
+        return;
+      }
+
+      const completedRuns = runs.filter(r => r.status !== 'running');
+      const passed = completedRuns.filter(r => r.status === 'success' || r.status === 'passed').length;
+      const rate = completedRuns.length > 0 ? Math.round((passed / completedRuns.length) * 100) : 100;
+      const rateEl = document.getElementById('kpi-rate');
+      rateEl.textContent = `${rate}%`;
+      rateEl.className = `text-3xl font-bold mt-1 ${rate >= 80 ? 'text-emerald-400' : rate >= 50 ? 'text-amber-400' : 'text-red-400'}`;
+      document.getElementById('kpi-sub-rate').textContent = `${passed} of ${completedRuns.length} completed runs succeeded`;
+
+      const durations = completedRuns.map(r => r.duration_s).filter(Boolean);
+      if (durations.length > 0) {
+        const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
+        document.getElementById('kpi-duration').textContent = formatDurationSec(avg);
+      } else {
+        document.getElementById('kpi-duration').textContent = runs[0].duration || '--';
+      }
+
+      const latestSuccess = runs.find(r => r.status === 'success' || r.status === 'passed') || runs[0];
+      document.getElementById('kpi-version').textContent = latestSuccess.version || '--';
+      document.getElementById('kpi-sub-version').textContent = `Commit ${latestSuccess.commit || '--'} (${latestSuccess.release_mode || 'release'})`;
+    }
+
+    function renderLatestBanner(latest) {
+      if (!latest) return;
+      const banner = document.getElementById('latest-run-banner');
+      banner.classList.remove('hidden');
+
+      const st = getStatusStyle(latest.status);
+      const badge = document.getElementById('latest-status-badge');
+      badge.className = `px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider flex items-center space-x-1.5 ${st.badge}`;
+      badge.innerHTML = `<span class="w-2 h-2 rounded-full ${st.dot}"></span><span>${st.text}</span>`;
+
+      document.getElementById('latest-title').textContent = `Latest Run ${latest.run_number || ''}`;
+      document.getElementById('latest-version-pill').textContent = latest.version || 'v0.1.0';
+      const skipPill = document.getElementById('latest-skip-concourse-pill');
+      if (latest.skip_concourse) {
+        skipPill.classList.remove('hidden');
+      } else {
+        skipPill.classList.add('hidden');
+      }
+      document.getElementById('latest-meta').textContent =
+        `Mode: ${(latest.release_mode || 'snapshot').toUpperCase()} • Triggered via ${latest.trigger || 'manual'} by ${latest.actor || 'maintainer'} • Commit ${latest.commit || '--'} • Duration ${latest.duration || '--'} • ${formatDate(latest.timestamp)}`;
+      document.getElementById('latest-link').href = latest.url || '#';
+      const relLink = document.getElementById('latest-release-link');
+      if (latest.release_mode === 'release' && latest.release_url) {
+        relLink.href = latest.release_url;
+        relLink.classList.remove('hidden');
+      } else {
+        relLink.classList.add('hidden');
+      }
+
+      const stages = latest.stages || {};
+      const grid = document.getElementById('latest-stages-grid');
+      grid.innerHTML = Object.entries(STAGE_LABELS).map(([key, label]) => {
+        const sVal = stages[key] || 'skipped';
+        const sStyle = getStatusStyle(sVal);
+        return `
+          <div class="stage-pill rounded-lg p-3.5 border ${sStyle.cardBorder} flex items-center justify-between">
+            <span class="text-xs font-medium text-slate-200">${label}</span>
+            <span class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${sStyle.badge}">${sStyle.text}</span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function setFilter(filter) {
+      currentFilter = filter;
+      ['all', 'release', 'snapshot', 'success', 'failure'].forEach(f => {
+        const btn = document.getElementById(`filter-${f}`);
+        if (!btn) return;
+        if (f === filter) {
+          btn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium bg-sky-500 text-slate-950 transition';
+        } else {
+          btn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800/80 text-slate-300 hover:bg-slate-700 transition';
+        }
+      });
+      renderRuns();
+    }
+
+    function renderRuns() {
+      const query = (document.getElementById('search-input').value || '').toLowerCase().trim();
+      const sorted = sortRunsByNumber(allRuns, sortAscending);
+      const filtered = sorted.filter(r => {
+        const mode = (r.release_mode || 'snapshot').toLowerCase();
+        if (currentFilter === 'release' && mode !== 'release') return false;
+        if (currentFilter === 'snapshot' && mode !== 'snapshot') return false;
+        if (currentFilter === 'success' && r.status !== 'success' && r.status !== 'passed') return false;
+        if (currentFilter === 'failure' && r.status !== 'failure' && r.status !== 'failed') return false;
+        if (!query) return true;
+        return (
+          (r.version || '').toLowerCase().includes(query) ||
+          (r.commit || '').toLowerCase().includes(query) ||
+          (r.run_number || '').toLowerCase().includes(query) ||
+          (r.trigger || '').toLowerCase().includes(query) ||
+          mode.includes(query)
+        );
+      });
+
+      document.getElementById('showing-count').textContent = `${filtered.length} of ${allRuns.length} runs`;
+      const tbody = document.getElementById('runs-tbody');
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="10" class="py-10 text-center text-slate-500">No matching pipeline runs found.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filtered.map((run, idx) => {
+        const st = getStatusStyle(run.status);
+        const mode = (run.release_mode || 'snapshot').toLowerCase();
+        const modeBadge = mode === 'release'
+          ? '<span class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-purple-500/15 text-purple-400 border border-purple-500/30">Release</span>'
+          : '<span class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-sky-500/15 text-sky-400 border border-sky-500/30">Snapshot</span>';
+        const stages = run.stages || {};
+        const stageDots = Object.entries(STAGE_LABELS).map(([k, label]) => {
+          const stStage = getStatusStyle(stages[k] || 'skipped');
+          return `<span title="${label}: ${stStage.text}" class="w-5 h-2 rounded-sm inline-block ${stStage.dot}"></span>`;
+        }).join('<span class="w-1"></span>');
+
+        const detailsId = `details-${idx}`;
+        const releaseLinkHtml = (mode === 'release' && run.release_url)
+          ? `<a href="${run.release_url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-emerald-400 hover:text-emerald-300 font-medium">Release</a>`
+          : '';
+        return `
+          <tr class="hover:bg-slate-800/40 transition cursor-pointer" onclick="toggleDetails('${detailsId}')">
+            <td class="py-3.5 px-4 font-mono font-semibold">
+              <a href="${run.url || '#'}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-sky-400 hover:text-sky-300 underline decoration-sky-500/40">${run.run_number || '#1'}</a>
+            </td>
+            <td class="py-3.5 px-4">${modeBadge}</td>
+            <td class="py-3.5 px-4">
+              <span class="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium ${st.badge}">
+                <span class="w-1.5 h-1.5 rounded-full ${st.dot}"></span>
+                <span>${st.text}</span>
+              </span>
+            </td>
+            <td class="py-3.5 px-4 font-mono text-sky-400">
+              ${run.version || '--'}
+              ${run.skip_concourse ? '<span class="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">skip-concourse</span>' : ''}
+            </td>
+            <td class="py-3.5 px-4 font-mono">
+              <a href="${run.commit_url || '#'}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-slate-300 hover:text-sky-400 underline decoration-slate-700">${run.commit || '--'}</a>
+            </td>
+            <td class="py-3.5 px-4">
+              <div class="flex items-center space-x-1">${stageDots}</div>
+            </td>
+            <td class="py-3.5 px-4 font-mono text-slate-300">${run.duration || '--'}</td>
+            <td class="py-3.5 px-4 text-slate-400">${run.trigger || '--'}</td>
+            <td class="py-3.5 px-4 text-slate-400">${formatDate(run.timestamp)}</td>
+            <td class="py-3.5 px-4 text-right space-x-2">
+              ${releaseLinkHtml}
+              <a href="${run.url || '#'}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-sky-400 hover:text-sky-300 font-medium">Logs &rarr;</a>
+            </td>
+          </tr>
+          <tr id="${detailsId}" class="hidden bg-slate-900/70">
+            <td colspan="10" class="p-4">
+              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 mb-3">
+                ${Object.entries(STAGE_LABELS).map(([k, label]) => {
+                  const stStage = getStatusStyle(stages[k] || 'skipped');
+                  return `
+                    <div class="p-2.5 rounded border ${stStage.cardBorder} flex items-center justify-between">
+                      <span class="text-[11px] text-slate-300">${label}</span>
+                      <span class="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded ${stStage.badge}">${stStage.text}</span>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px] font-mono text-slate-400 bg-slate-950/60 p-3 rounded border border-slate-800">
+                <div><span class="text-slate-500">SHA-256:</span> ${run.sha256 ? run.sha256.substring(0, 24) + '...' : 'verified'}</div>
+                <div><span class="text-slate-500">Candidate GCS:</span> ${run.beta_gcs_uri || 'gs://cfbosh-cicd/cpi_releases/'}</div>
+                <div><span class="text-slate-500">External Release:</span> ${mode === 'release' ? (run.prod_gcs_uri || 'GitHub Releases') : 'Skipped (snapshot mode)'}</div>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function toggleDetails(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('hidden');
+    }
+
+    async function fetchLiveGitHubRuns() {
+      try {
+        const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=30`, {
+          headers: { 'Accept': 'application/vnd.github+json' }
+        });
+        if (res.status === 404) {
+          return { reachable: true, runs: [] };
+        }
+        if (!res.ok) return { reachable: false, runs: [] };
+        const data = await res.json();
+        return { reachable: true, runs: data.workflow_runs || [] };
+      } catch (e) {
+        return { reachable: false, runs: [] };
+      }
+    }
+
+    async function fetchLiveRunDetails(runId) {
+      try {
+        const [jobsRes, artifactsRes] = await Promise.all([
+          fetch(`https://api.github.com/repos/${GITHUB_REPO}/actions/runs/${runId}/jobs`, {
+            headers: { 'Accept': 'application/vnd.github+json' }
+          }),
+          fetch(`https://api.github.com/repos/${GITHUB_REPO}/actions/runs/${runId}/artifacts`, {
+            headers: { 'Accept': 'application/vnd.github+json' }
+          })
+        ]);
+        const jobs = jobsRes.ok ? ((await jobsRes.json()).jobs || []) : [];
+        const artifacts = artifactsRes.ok ? ((await artifactsRes.json()).artifacts || []) : [];
+        return { jobs, artifacts };
+      } catch (e) {
+        return { jobs: [], artifacts: [] };
+      }
+    }
+
+    function mapJobState(job) {
+      if (!job) return 'pending';
+      if (job.status !== 'completed') return 'running';
+      if (job.conclusion === 'success') return 'passed';
+      if (job.conclusion === 'skipped') return 'skipped';
+      return 'failed';
+    }
+
+    async function loadDashboard() {
+      try {
+        const res = await fetch('./data/runs.json?t=' + Date.now());
+        if (res.ok) {
+          staticRuns = await res.json();
+        }
+      } catch (err) {
+        console.warn('Could not load local runs.json:', err);
+      }
+
+      const { reachable: ghReachable, runs: ghRuns } = await fetchLiveGitHubRuns();
+      const staticById = new Map(staticRuns.map(r => [String(r.id), r]));
+      const seenIds = new Set();
+      const merged = [];
+
+      for (const ghRun of ghRuns) {
+        const idStr = String(ghRun.id);
+        const staticEntry = staticById.get(idStr);
+        if (staticEntry && ghRun.status === 'completed' && staticEntry.status !== 'running') {
+          if (!seenIds.has(idStr)) {
+            merged.push({ ...staticEntry, id: idStr });
+            seenIds.add(idStr);
+          }
+          staticById.delete(idStr);
+          continue;
+        }
+        const isRunning = ghRun.status !== 'completed';
+        const overallStatus = isRunning ? 'running' : (ghRun.conclusion === 'success' ? 'success' : 'failure');
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - new Date(ghRun.run_started_at || ghRun.created_at).getTime()) / 1000));
+        const shortSha = (ghRun.head_sha || '').substring(0, 7);
+
+        let inferredVersion = staticEntry?.version || '';
+        let inferredMode = staticEntry?.release_mode || '';
+        let liveStages = null;
+
+        // Fetch job/artifact details when the run is live OR when it is complete but missing from
+        // runs.json (e.g. data not yet committed), so mode/version come from the pipeline-meta
+        // artifact instead of being guessed from the trigger event.
+        if (isRunning || !staticEntry) {
+          const { jobs, artifacts } = await fetchLiveRunDetails(idStr);
+          const metaArt = artifacts.find(a => (a.name || '').startsWith('pipeline-meta-'));
+          if (metaArt) {
+            const rest = metaArt.name.replace('pipeline-meta-', '');
+            if (rest.startsWith('release-')) {
+              inferredMode = 'release';
+              inferredVersion = `v${rest.replace('release-', '').replace(/^v/, '')}`;
+            } else if (rest.startsWith('snapshot-')) {
+              inferredMode = 'snapshot';
+              inferredVersion = `v${rest.replace('snapshot-', '').replace(/^v/, '')}`;
+            }
+          }
+          const cpiArt = artifacts.find(a => (a.name || '').startsWith('cpi-release-artifacts-'));
+          if (cpiArt) {
+            const artVer = cpiArt.name.replace('cpi-release-artifacts-', '');
+            inferredVersion = `v${artVer.replace(/^v/, '')}`;
+            inferredMode = artVer.includes('-dev.') ? 'snapshot' : 'release';
+          }
+          if (jobs.length > 0) {
+            const buildJob = jobs.find(j => (j.name || '').includes('Build Candidate CPI'));
+            const concourseJob = jobs.find(j => (j.name || '').includes('Run Concourse Deployment'));
+            const releaseJob = jobs.find(j => (j.name || '').includes('Release CPI Artifact'));
+            const buildState = mapJobState(buildJob);
+            liveStages = {
+              build_candidate: buildState,
+              concourse: mapJobState(concourseJob),
+              vuln_scan: buildState,
+              release: mapJobState(releaseJob)
+            };
+          }
+        }
+
+        const mode = inferredMode || (ghRun.event === 'schedule' ? 'release' : 'snapshot');
+        const version = inferredVersion || (mode === 'release' ? 'v0.1.0' : `v0.1.0-dev.${shortSha}`);
+
+        if (!seenIds.has(idStr)) {
+          merged.push({
+            id: idStr,
+            run_number: staticEntry?.run_number || '#1',
+            timestamp: ghRun.run_started_at || ghRun.created_at,
+            status: overallStatus,
+            release_mode: mode,
+            skip_concourse: staticEntry?.skip_concourse || false,
+            version,
+            commit: shortSha,
+            commit_url: `https://github.com/${GITHUB_REPO}/commit/${ghRun.head_sha}`,
+            duration: isRunning ? `${formatDurationSec(elapsedSec)} (live)` : formatDurationSec(elapsedSec),
+            duration_s: isRunning ? null : elapsedSec,
+            trigger: ghRun.event,
+            actor: ghRun.actor?.login || 'maintainer',
+            url: ghRun.html_url,
+            release_url: mode === 'release' ? `https://github.com/${GITHUB_REPO}/releases/tag/${version}` : '',
+            stages: liveStages || staticEntry?.stages || {
+              build_candidate: isRunning ? 'running' : (ghRun.conclusion === 'success' ? 'passed' : 'failed'),
+              concourse: isRunning ? 'pending' : (ghRun.conclusion === 'success' ? 'passed' : 'skipped'),
+              vuln_scan: isRunning ? 'running' : (ghRun.conclusion === 'success' ? 'passed' : 'failed'),
+              release: isRunning ? 'pending' : (ghRun.conclusion === 'success' ? 'passed' : 'failed')
+            }
+          });
+          seenIds.add(idStr);
+        }
+        staticById.delete(idStr);
+      }
+
+      if (!ghReachable) {
+        for (const leftover of staticById.values()) {
+          const lid = String(leftover.id);
+          if (!seenIds.has(lid)) {
+            merged.push(leftover);
+            seenIds.add(lid);
+          }
+        }
+      }
+
+      // Assign sequential #1..#N in chronological order of run ID so resetting runs starts at #1
+      const chronological = [...merged].sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+      chronological.forEach((r, idx) => {
+        r.run_number = `#${idx + 1}`;
+      });
+
+      allRuns = sortRunsByNumber(chronological, false);
+      document.getElementById('last-updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+      updateKPIs(allRuns);
+      if (allRuns.length > 0) {
+        renderLatestBanner(allRuns[0]);
+      }
+      renderRuns();
+    }
+
+    loadDashboard();
+    setInterval(loadDashboard, 30000);
+  </script>
+</body>
+</html>
