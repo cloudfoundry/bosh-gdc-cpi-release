@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Build a BOSH release tarball for bosh-gdc-cpi.
+#
+# Usage:
+#   scripts/create-release                      # dev release (timestamped)
+#   scripts/create-release dev                  # dev release (timestamped)
+#   scripts/create-release X.Y.Z                # versioned release tarball + .sha256
+#   scripts/create-release X.Y.Z --commit-tag   # versioned release + git commit & tag vX.Y.Z
+#
+# Output contract:
+#   - Tarball is written to dev_releases/bosh-gdc-cpi/<name>.tgz (dev) or
+#     releases/bosh-gdc-cpi/<name>.tgz (versioned), matching BOSH directory conventions.
+#   - Archive identity (release.MF name & version) and SHA-256 digest are verified
+#     via scripts/_release_artifact.py and written to <tarball>.sha256.
+#   - The absolute path to the tarball is printed to stdout as the last line:
+#       RELEASE_TGZ=/abs/path/to/bosh-gdc-cpi-X.tgz
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${REPO_ROOT}"
+
+RELEASE_NAME="$(bosh int config/final.yml --path /name 2>/dev/null || bosh int config/final.yml --path /final_name 2>/dev/null || true)"
+if [[ -z "${RELEASE_NAME}" ]]; then
+  echo "create-release: could not read /name or /final_name from config/final.yml" >&2
+  exit 1
+fi
+
+VERSION="${1:-dev}"
+COMMIT_TAG="false"
+if [[ "${2:-}" == "--commit-tag" ]]; then
+  COMMIT_TAG="true"
+fi
+
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+RESET='\033[0m'
+
+echo -e "${GREEN}==> Cleaning release artifacts${RESET}"
+make release-clean
+
+echo -e "${GREEN}==> Compiling CPI release binaries (version=${VERSION})${RESET}"
+make release-binaries VERSION="${VERSION}"
+
+if [[ "${VERSION}" == "dev" ]]; then
+  TS="$(date -u +%Y%m%d%H%M%S)"
+  TARBALL_DIR="${REPO_ROOT}/dev_releases/${RELEASE_NAME}"
+  mkdir -p "${TARBALL_DIR}"
+  TARBALL="${TARBALL_DIR}/${RELEASE_NAME}-dev-${TS}.tgz"
+  echo -e "${GREEN}==> bosh create-release (dev, ts=${TS})${RESET}"
+  bosh create-release --force --tarball="${TARBALL}"
+  IDENTITY_JSON="$(python3 "${REPO_ROOT}/scripts/_release_artifact.py" "${TARBALL}")"
+else
+  TARBALL_DIR="${REPO_ROOT}/releases/${RELEASE_NAME}"
+  mkdir -p "${TARBALL_DIR}"
+  TARBALL="${TARBALL_DIR}/${RELEASE_NAME}-${VERSION}.tgz"
+  echo -e "${GREEN}==> bosh create-release (version=${VERSION})${RESET}"
+  bosh create-release --force --version="${VERSION}" --tarball="${TARBALL}"
+  IDENTITY_JSON="$(python3 "${REPO_ROOT}/scripts/_release_artifact.py" "${TARBALL}" --expected-version "${VERSION}")"
+fi
+
+SHA256="$(echo "${IDENTITY_JSON}" | jq -r '.sha256')"
+TARBALL_BASENAME="$(basename "${TARBALL}")"
+printf '%s  %s\n' "${SHA256}" "${TARBALL_BASENAME}" >"${TARBALL}.sha256"
+
+echo -e "${GREEN}✓ ${TARBALL} (sha256: ${SHA256})${RESET}"
+echo -e "${GREEN}✓ ${TARBALL}.sha256${RESET}"
+
+if [[ "${VERSION}" != "dev" && "${COMMIT_TAG}" == "true" ]]; then
+  echo -e "${GREEN}==> Committing final release ${VERSION}${RESET}"
+  git add .
+  STAGED_SECRETS="$(git diff --cached --name-only | grep -E '(creds|vars|secret)\.yml$' || true)"
+  if [[ -n "${STAGED_SECRETS}" && "${ALLOW_SECRET_COMMIT:-0}" != "1" ]]; then
+    echo "ERROR: Secret guard blocked the commit for files matching (creds|vars|secret).yml:" >&2
+    echo "${STAGED_SECRETS}" >&2
+    exit 1
+  fi
+  git commit -s -m "chore(release): cut ${RELEASE_NAME} v${VERSION}"
+  git tag -a "v${VERSION}" -m "Release v${VERSION}"
+  echo -e "${YELLOW}Don't forget: git push --follow-tags${RESET}"
+fi
+
+echo "RELEASE_TGZ=${TARBALL}"
