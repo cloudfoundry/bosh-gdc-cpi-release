@@ -1,0 +1,436 @@
+# SPDX-FileCopyrightText: 2026 Google LLC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: CFBOSH GDC release pipeline
+
+on:
+  schedule:
+    # Run once every two weeks (1st and 15th of every month at 00:00 UTC, matching GitOnBorg schedule)
+    - cron: '0 0 1,15 * *'
+  workflow_dispatch:
+    inputs:
+      release_mode:
+        description: 'Pipeline execution mode (snapshot = internal GCS validation only, release = official SemVer GitHub & GCS release)'
+        required: false
+        default: 'snapshot'
+        type: choice
+        options:
+          - snapshot
+          - release
+      version:
+        description: 'Explicit SemVer version override (e.g. 0.1.0; defaults to next SemVer derived from Git tags)'
+        required: false
+        type: string
+      next_version:
+        description: 'SemVer increment strategy derived from latest vX.Y.Z Git tag'
+        required: false
+        default: 'bump-patch'
+        type: choice
+        options:
+          - bump-patch
+          - bump-minor
+          - bump-major
+          - noop
+      skip_concourse:
+        description: 'Skip Concourse deployment pipeline stage (use in case of underlying infra issue)'
+        required: false
+        default: false
+        type: boolean
+      concourse_wait_for:
+        description: 'Concourse job to watch before proceeding to release stage (promote-candidate = full pipeline)'
+        required: false
+        default: 'promote-candidate'
+        type: choice
+        options:
+          - promote-candidate
+          - bosh-deployment
+          - bosh-bootstrap
+          - start-deployments
+          - none
+      pr_number:
+        description: 'Optional PR number to checkout and test'
+        required: false
+        type: string
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: write
+  checks: write
+  issues: write
+  pull-requests: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: cfbosh-gdc-release-pipeline-${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pr_number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: 1. Authorize & Resolve SemVer
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/test-release')) ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'trigger-release')
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.init.outputs.should_run }}
+      skip_concourse: ${{ steps.init.outputs.skip_concourse }}
+      concourse_wait_for: ${{ steps.init.outputs.concourse_wait_for }}
+      release_mode: ${{ steps.semver.outputs.release_mode }}
+      version: ${{ steps.semver.outputs.version }}
+      tag: ${{ steps.semver.outputs.tag }}
+      base_version: ${{ steps.semver.outputs.base_version }}
+      next_version_mode: ${{ steps.init.outputs.next_version_mode }}
+      prerelease: ${{ steps.semver.outputs.prerelease }}
+      latest: ${{ steps.semver.outputs.latest }}
+      latest_tag: ${{ steps.semver.outputs.latest_tag }}
+      commits_since_tag: ${{ steps.semver.outputs.commits_since_tag }}
+      has_new_commits: ${{ steps.semver.outputs.has_new_commits }}
+      target_ref: ${{ steps.init.outputs.target_ref }}
+      start_epoch: ${{ steps.init.outputs.start_epoch }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify Trigger Authorization & Resolve Parameters
+        id: init
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_RELEASE_MODE: ${{ github.event.inputs.release_mode }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_NEXT_VERSION: ${{ github.event.inputs.next_version }}
+          INPUT_SKIP_CONCOURSE: ${{ github.event.inputs.skip_concourse }}
+          INPUT_CONCOURSE_WAIT_FOR: ${{ github.event.inputs.concourse_wait_for }}
+          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          source ./scripts/ci-common.sh
+
+          START_EPOCH="$(date +%s)"
+          RELEASE_MODE="${INPUT_RELEASE_MODE:-snapshot}"
+          EXPLICIT_VERSION="${INPUT_VERSION:-}"
+          NEXT_VERSION_MODE="${INPUT_NEXT_VERSION:-bump-patch}"
+          SKIP_CONCOURSE="${INPUT_SKIP_CONCOURSE:-false}"
+          CONCOURSE_WAIT_FOR="${INPUT_CONCOURSE_WAIT_FOR:-promote-candidate}"
+          TARGET_REF="${GITHUB_SHA}"
+          ALLOW_BRANCH="false"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            echo "[INFO] Triggered by biweekly schedule (0 0 1,15 * *); running official SemVer release."
+            RELEASE_MODE="release"
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if ! is_authorized_maintainer "${GITHUB_ACTOR}" ""; then
+              echo "::error::User '${GITHUB_ACTOR}' is not authorized to trigger the release pipeline."
+              exit 1
+            fi
+            if [[ -n "${INPUT_PR_NUMBER}" ]]; then
+              git fetch origin "pull/${INPUT_PR_NUMBER}/head:pr-${INPUT_PR_NUMBER}"
+              TARGET_REF="$(git rev-parse "pr-${INPUT_PR_NUMBER}")"
+              ALLOW_BRANCH="true"
+              echo "[INFO] PR target specified (#${INPUT_PR_NUMBER}); running in RELEASE_MODE=${RELEASE_MODE}."
+            elif [[ "${GITHUB_REF_NAME:-}" != "main" ]]; then
+              ALLOW_BRANCH="true"
+              echo "[INFO] Non-main branch ('${GITHUB_REF_NAME:-}'); running in RELEASE_MODE=${RELEASE_MODE}."
+            fi
+          elif [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            PR_USER="$(jq -r '.pull_request.user.login // empty' "${GITHUB_EVENT_PATH}")"
+            PR_ASSOC="$(jq -r '.pull_request.author_association // empty' "${GITHUB_EVENT_PATH}")"
+            LABEL_NAME="$(jq -r '.label.name // empty' "${GITHUB_EVENT_PATH}")"
+            if ! is_authorized_maintainer "${GITHUB_ACTOR}" "${PR_ASSOC}"; then
+              echo "::error::User '${GITHUB_ACTOR}' is not authorized to trigger the release pipeline."
+              exit 1
+            fi
+            SKIP_CONCOURSE="false"
+            TARGET_REF="$(jq -r '.pull_request.head.sha' "${GITHUB_EVENT_PATH}")"
+            ALLOW_BRANCH="true"
+            RELEASE_MODE="snapshot"
+            echo "[INFO] Triggered from Pull Request label '${LABEL_NAME}'; forcing RELEASE_MODE=snapshot and SKIP_CONCOURSE=false."
+          elif [[ "${GITHUB_EVENT_NAME}" == "issue_comment" ]]; then
+            COMMENT_BODY="$(jq -r '.comment.body // empty' "${GITHUB_EVENT_PATH}")"
+            COMMENT_USER="$(jq -r '.comment.user.login // empty' "${GITHUB_EVENT_PATH}")"
+            COMMENT_ASSOC="$(jq -r '.comment.author_association // empty' "${GITHUB_EVENT_PATH}")"
+            COMMENT_ID="$(jq -r '.comment.id // empty' "${GITHUB_EVENT_PATH}")"
+            PR_NUM="$(jq -r '.issue.number // empty' "${GITHUB_EVENT_PATH}")"
+
+            CMD_LINE="$(printf '%s\n' "${COMMENT_BODY}" | tr -d '\r' | grep -E '^[[:space:]]*/test-release([[:space:]]|$)' | head -n 1 || true)"
+            if [[ -z "${CMD_LINE}" ]]; then
+              echo "should_run=false" >>"${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            if ! is_authorized_maintainer "${COMMENT_USER}" "${COMMENT_ASSOC}"; then
+              echo "::error::User '${COMMENT_USER}' is not authorized to trigger '/test-release'."
+              exit 1
+            fi
+            RELEASE_MODE="snapshot"
+            if [[ "${CMD_LINE}" =~ mode=(release|snapshot) ]]; then
+              RELEASE_MODE="${BASH_REMATCH[1]}"
+            fi
+            if [[ "${CMD_LINE}" == *"skip-concourse"* || "${CMD_LINE}" == *"--skip-concourse"* ]]; then
+              SKIP_CONCOURSE="true"
+            fi
+            if [[ "${CMD_LINE}" =~ version=([0-9]+\.[0-9]+\.[0-9A-Za-z.-]+) ]]; then
+              EXPLICIT_VERSION="${BASH_REMATCH[1]}"
+            fi
+            git fetch origin "pull/${PR_NUM}/head:pr-${PR_NUM}"
+            TARGET_REF="$(git rev-parse "pr-${PR_NUM}")"
+            ALLOW_BRANCH="true"
+            echo "[INFO] Triggered from Pull Request #${PR_NUM} comment in RELEASE_MODE=${RELEASE_MODE}."
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}/reactions" -f content='rocket' >/dev/null 2>&1 || true
+          fi
+
+          {
+            echo "should_run=true"
+            echo "skip_concourse=${SKIP_CONCOURSE}"
+            echo "concourse_wait_for=${CONCOURSE_WAIT_FOR}"
+            echo "release_mode=${RELEASE_MODE}"
+            echo "explicit_version=${EXPLICIT_VERSION}"
+            echo "next_version_mode=${NEXT_VERSION_MODE}"
+            echo "target_ref=${TARGET_REF}"
+            echo "allow_branch=${ALLOW_BRANCH}"
+            echo "start_epoch=${START_EPOCH}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Resolve SemVer Release Plan
+        if: steps.init.outputs.should_run == 'true'
+        id: semver
+        run: |
+          set -euo pipefail
+          git checkout "${{ steps.init.outputs.target_ref }}"
+          ARGS=(
+            "--stage" "resolve"
+            "--mode" "${{ steps.init.outputs.release_mode }}"
+            "--next-version" "${{ steps.init.outputs.next_version_mode }}"
+          )
+          if [[ -n "${{ steps.init.outputs.explicit_version }}" ]]; then
+            ARGS+=("--version" "${{ steps.init.outputs.explicit_version }}")
+          fi
+          if [[ "${{ steps.init.outputs.allow_branch }}" == "true" ]]; then
+            ARGS+=("--allow-branch")
+          fi
+          ./scripts/release-cpi.sh "${ARGS[@]}"
+          printf '%s\n' "${{ steps.semver.outputs.release_mode }}:${{ steps.semver.outputs.version }}" > /tmp/pipeline-meta.txt
+
+      - name: Upload Pipeline Run Metadata Artifact
+        if: steps.init.outputs.should_run == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pipeline-meta-${{ steps.semver.outputs.release_mode }}-${{ steps.semver.outputs.version }}
+          path: /tmp/pipeline-meta.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+  build_candidate:
+    name: 2. Build Candidate CPI & Scan Vulnerabilities
+    needs: [prepare]
+    if: needs.prepare.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    environment: cfbosh-staging
+    timeout-minutes: 30
+    outputs:
+      sha256: ${{ steps.candidate.outputs.sha256 }}
+      beta_gcs_uri: ${{ steps.candidate.outputs.beta_gcs_uri }}
+    steps:
+      - name: Checkout Target Revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.prepare.outputs.target_ref }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Unit & SemVer Verification Tests
+        run: make test
+
+      - name: Build Candidate BOSH CPI Release, Scan Vulnerabilities & Upload to GCS
+        id: candidate
+        env:
+          CFBOSH_CICD_SERVICE_ACCOUNT_KEY: ${{ secrets.CFBOSH_CICD_SERVICE_ACCOUNT_KEY || secrets.GCP_SA_KEY }}
+        run: |
+          set -euo pipefail
+          source ./scripts/ci-common.sh
+          setup_gcp_sa_key "/tmp/cfbosh-cicd-sa.json" "${CFBOSH_CICD_SERVICE_ACCOUNT_KEY}"
+          ./scripts/release-cpi.sh \
+            --stage candidate \
+            --mode "${{ needs.prepare.outputs.release_mode }}" \
+            --version "${{ needs.prepare.outputs.version }}"
+
+      - name: Upload CPI Release Tarball & Vulnerability Report Artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cpi-release-artifacts-${{ needs.prepare.outputs.version }}
+          path: |
+            releases/bosh-gdc-cpi/bosh-gdc-cpi-${{ needs.prepare.outputs.version }}.tgz
+            releases/bosh-gdc-cpi/bosh-gdc-cpi-${{ needs.prepare.outputs.version }}.tgz.sha256
+            releases/bosh-gdc-cpi/bosh_gdch_cpi_release_${{ needs.prepare.outputs.version }}.tgz
+            releases/bosh-gdc-cpi/vulnerability-report-${{ needs.prepare.outputs.version }}.md
+          if-no-files-found: error
+          retention-days: 14
+
+  concourse:
+    name: 3. Run Concourse Deployment Pipeline (GKE)
+    needs: [prepare, build_candidate]
+    if: needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.skip_concourse != 'true'
+    runs-on: ubuntu-latest
+    environment: cfbosh-staging
+    timeout-minutes: 360
+    outputs:
+      concourse_status: ${{ steps.run_concourse.outputs.concourse_status }}
+      concourse_build: ${{ steps.run_concourse.outputs.concourse_build }}
+      concourse_log_uri: ${{ steps.run_concourse.outputs.concourse_log_uri }}
+    steps:
+      - name: Checkout Target Revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.prepare.outputs.target_ref }}
+          fetch-depth: 0
+
+      - name: Deploy & Execute Concourse Pipeline on GKE
+        id: run_concourse
+        env:
+          CFBOSH_CICD_SERVICE_ACCOUNT_KEY: ${{ secrets.CFBOSH_CICD_SERVICE_ACCOUNT_KEY || secrets.GCP_SA_KEY }}
+          GDC_ORG: ${{ secrets.GDC_ORG }}
+          GDC_CONSOLE_URL: ${{ secrets.GDC_CONSOLE_URL }}
+          STEMCELL_BUILDER_REPO_URL: "https://github.com/cloudfoundry/bosh-linux-stemcell-builder.git"
+          STEMCELL_BUILDER_BRANCH: "ubuntu-noble"
+          # TODO: Clear STEMCELL_BUILDER_PR_REF once https://github.com/cloudfoundry/bosh-linux-stemcell-builder/pull/778 is merged into ubuntu-noble
+          STEMCELL_BUILDER_PR_REF: "pull/778/head"
+        run: |
+          set -euo pipefail
+          source ./scripts/ci-common.sh
+          setup_gcp_sa_key "/tmp/cfbosh-cicd-sa.json" "${CFBOSH_CICD_SERVICE_ACCOUNT_KEY}"
+          ./ci/run-pipeline.sh \
+            --type prod \
+            --fly-target cfbosh-concourse-gke \
+            --cpi-version "${{ needs.prepare.outputs.version }}" \
+            --wait-job "${{ needs.prepare.outputs.concourse_wait_for }}" \
+            --status-file "/tmp/concourse-status.json"
+
+      - name: Upload Concourse Execution Metadata
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: concourse-status-${{ needs.prepare.outputs.version }}
+          path: /tmp/concourse-status.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release:
+    name: 4. Release CPI Artifact (GitHub & GCS)
+    needs: [prepare, build_candidate, concourse]
+    if: >-
+      always() &&
+      needs.prepare.outputs.should_run == 'true' &&
+      needs.prepare.outputs.has_new_commits == 'true' &&
+      needs.build_candidate.result == 'success' &&
+      (needs.concourse.result == 'success' || (needs.concourse.result == 'skipped' && needs.prepare.outputs.skip_concourse == 'true'))
+    runs-on: ubuntu-latest
+    environment: cfbosh-staging
+    timeout-minutes: 30
+    outputs:
+      release_url: ${{ steps.publish.outputs.release_url }}
+      prod_gcs_uri: ${{ steps.publish.outputs.prod_gcs_uri }}
+      sha256: ${{ steps.publish.outputs.sha256 }}
+    steps:
+      - name: Checkout Target Revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.prepare.outputs.target_ref }}
+          fetch-depth: 0
+
+      - name: Download Verified CPI Release Artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cpi-release-artifacts-${{ needs.prepare.outputs.version }}
+          path: releases/bosh-gdc-cpi
+
+      - name: Publish CPI Release to GitHub Releases & Production GCS Bucket
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CFBOSH_CICD_SERVICE_ACCOUNT_KEY: ${{ secrets.CFBOSH_CICD_SERVICE_ACCOUNT_KEY || secrets.GCP_SA_KEY }}
+          IS_LATEST: ${{ needs.prepare.outputs.latest }}
+        run: |
+          set -euo pipefail
+          source ./scripts/ci-common.sh
+          setup_gcp_sa_key "/tmp/cfbosh-cicd-sa.json" "${CFBOSH_CICD_SERVICE_ACCOUNT_KEY}"
+
+          CONCOURSE_STAGE_STATE="succeeded"
+          if [[ "${{ needs.prepare.outputs.skip_concourse }}" == "true" ]]; then
+            CONCOURSE_STAGE_STATE="skipped (manual override)"
+          fi
+
+          PUBLISH_ARGS=(
+            "--stage" "publish"
+            "--mode" "${{ needs.prepare.outputs.release_mode }}"
+            "--version" "${{ needs.prepare.outputs.version }}"
+            "--next-version" "${{ needs.prepare.outputs.next_version_mode }}"
+            "--concourse-status" "${CONCOURSE_STAGE_STATE}"
+          )
+          if [[ "${{ needs.prepare.outputs.release_mode }}" != "release" ]]; then
+            PUBLISH_ARGS+=("--no-github-release")
+          fi
+          ./scripts/release-cpi.sh "${PUBLISH_ARGS[@]}"
+
+  update_dashboard:
+    name: 5. Update Release Pipeline Dashboard
+    needs: [prepare, build_candidate, concourse, release]
+    if: >-
+      always() &&
+      needs.prepare.outputs.should_run == 'true' &&
+      needs.prepare.outputs.has_new_commits == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    steps:
+      - name: Checkout Target Revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Update Dashboard Data & Step Summary
+        env:
+          PIPELINE_START_EPOCH: ${{ needs.prepare.outputs.start_epoch }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_MODE: ${{ needs.prepare.outputs.release_mode }}
+          SKIP_CONCOURSE: ${{ needs.prepare.outputs.skip_concourse }}
+          RELEASE_SHA256: ${{ needs.build_candidate.outputs.sha256 }}
+          PROD_GCS_URI: ${{ needs.release.outputs.prod_gcs_uri }}
+          CONCOURSE_LOG_URI: ${{ needs.concourse.outputs.concourse_log_uri }}
+          BUILD_CANDIDATE_RESULT: ${{ needs.build_candidate.result }}
+          CONCOURSE_RESULT: ${{ needs.concourse.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+          HAS_NEW_COMMITS: ${{ needs.prepare.outputs.has_new_commits }}
+          LATEST_TAG: ${{ needs.prepare.outputs.latest_tag }}
+          PUSH_DASHBOARD_DATA: "false"
+        run: ./scripts/update-dashboard.sh
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+
+      - name: Upload Dashboard Artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          path: './dashboard'
+
+      - name: Deploy Dashboard to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

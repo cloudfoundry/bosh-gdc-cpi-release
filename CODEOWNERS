@@ -1,2 +1,21 @@
 # bosh-gdc-cpi-release maintainers (Google & SAP)
 * @ajlfleos @sanjay-nagarur @dilipkumar2k6 @daniel-sarran @cmuuss @ahsanasardar @a-hassanin @neddp @gowrisankar22 @ivaylogi98
+
+# Concourse CI/CD deployment pipeline
+/ci/ @daniel-sarran
+
+# SemVer release management and CPI artifact publishing
+/VERSION @sanjay-nagarur
+/scripts/create-release @sanjay-nagarur
+/scripts/release-cpi.sh @sanjay-nagarur
+/scripts/_release_tag.py @sanjay-nagarur
+/scripts/_release_tag_test.py @sanjay-nagarur
+/scripts/_release_artifact.py @sanjay-nagarur
+/scripts/_release_artifact_test.py @sanjay-nagarur
+
+# GitHub Actions workflows and CI/CD dashboard
+/.github/ @dilipkumar2k6
+/dashboard/ @dilipkumar2k6
+/scripts/ci-common.sh @dilipkumar2k6
+/scripts/ci-integration-test.sh @dilipkumar2k6
+/scripts/update-dashboard.sh @dilipkumar2k6
