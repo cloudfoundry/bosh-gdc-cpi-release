@@ -1,0 +1,21 @@
+name: bosh-gdc-cpi
+version: 0.1.0
+commit_hash: ab9a4c3
+uncommitted_changes: false
+jobs:
+- name: gdc_cpi
+  version: 1e02965354bc879783d4f01fe1e951998dae3161fddc6ee3553371a4af9d803b
+  fingerprint: 1e02965354bc879783d4f01fe1e951998dae3161fddc6ee3553371a4af9d803b
+  sha1: sha256:bfae2823697bf4b412aca9b9e56e1e89e13712f9bf1cabdcaaee205d08b6e904
+  packages:
+  - bosh-gdc-cpi
+packages:
+- name: bosh-gdc-cpi
+  version: 17649b8bf369aa4ecfbfb881eb16189a41a84f79ea71669012fc137faf42cfd3
+  fingerprint: 17649b8bf369aa4ecfbfb881eb16189a41a84f79ea71669012fc137faf42cfd3
+  sha1: sha256:f95922108c4f08bc4d9d38f3aebca704ab57fa100ca3bdc8e828bf7183d8e3d1
+  dependencies: []
+license:
+  version: d0df1a42b66dd34aea649dc14f8e0969a8becc3b178433ef1e306221b718a517
+  fingerprint: d0df1a42b66dd34aea649dc14f8e0969a8becc3b178433ef1e306221b718a517
+  sha1: sha256:0ba97494952a36f53851cefb516fa56a1a23f33c2f6a79ce97e0c32b2bcc9434

@@ -13,3 +13,18 @@
 # limitations under the License.
 
 name: bosh-gdc-cpi
+
+# Read-only, anonymous blobstore backing the committed final-release metadata
+# (releases/ and .final_builds/), so that bosh.io and anyone with a fresh clone can run
+#   bosh create-release releases/bosh-gdc-cpi/bosh-gdc-cpi-<version>.yml
+# without credentials. Each blobstore_id is `v<version>/<asset>`, which the bosh CLI s3
+# provider resolves (path-style, unsigned) to the public GitHub Release asset
+#   https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases/download/v<version>/<asset>
+# Blobs are uploaded there by scripts/release-cpi.sh (see scripts/_final_release.py).
+blobstore:
+  provider: s3
+  options:
+    host: github.com
+    bucket_name: cloudfoundry
+    folder_name: bosh-gdc-cpi-release/releases/download
+    credentials_source: none

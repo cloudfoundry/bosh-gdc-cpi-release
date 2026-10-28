@@ -1,0 +1,6 @@
+builds:
+  17649b8bf369aa4ecfbfb881eb16189a41a84f79ea71669012fc137faf42cfd3:
+    version: 17649b8bf369aa4ecfbfb881eb16189a41a84f79ea71669012fc137faf42cfd3
+    blobstore_id: v0.1.0/package-bosh-gdc-cpi-17649b8bf369aa4ecfbfb881eb16189a41a84f79ea71669012fc137faf42cfd3.tgz
+    sha1: sha256:f95922108c4f08bc4d9d38f3aebca704ab57fa100ca3bdc8e828bf7183d8e3d1
+format-version: "2"

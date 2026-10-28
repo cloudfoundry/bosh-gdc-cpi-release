@@ -5,8 +5,14 @@ src/
 tmp/
 .dev_builds/
 dev_releases/
-.final_builds/
+blobs/
 .blobs/
+*.tgz
+*.tgz.sha256
+vulnerability-report-*.md
+# NOTE: releases/**/*.yml and .final_builds/ are committed on purpose: bosh.io rebuilds
+# final releases from that metadata (blobs are served from GitHub Release assets, see
+# config/final.yml). Only the built tarballs/reports next to them are ignored above.
 
 # Test and coverage artifacts
 coverage/
