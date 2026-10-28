@@ -10,6 +10,9 @@ TOOLS_BIN_DIR := $(TOOLS_DIR)/bin
 GO_DIR        := $(TOOLS_DIR)/go
 export PATH   := $(abspath $(GO_DIR)/bin):$(abspath $(TOOLS_BIN_DIR)):$(PATH)
 
+RELEASE_NAME  := bosh-gdc-cpi
+RELEASE_ROOT_TGZ_FIND := find $(REPO_ROOT) -maxdepth 1 \( -name 'bosh-gdc-cpi-*.tgz' -o -name 'bosh_gdc_cpi_release_*.tgz' -o -name 'bosh_gdch_cpi_release_*.tgz' \)
+
 GOLANGCI_LINT_VERSION ?= v2.4.0
 
 LDFLAGS       ?= -s -w
@@ -34,7 +37,7 @@ ifeq ($(GO_VERSION_OK),)
 export GOROOT := $(abspath $(GO_DIR))
 endif
 
-.PHONY: all ensure-go build build-linux build-darwin release-binaries test unittests test-race integration-test pre-check format check check-license tidy release vuln-scan coverage clean help
+.PHONY: all ensure-go build build-linux build-darwin release-binaries test unittests test-race py-test integration-test pre-check format check check-license tidy release dev-release release-name-check release-clean release-hygiene vuln-scan coverage clean help
 
 # Default target
 all: ensure-go pre-check test build
@@ -67,8 +70,8 @@ release-binaries: ensure-go
 	@CGO_ENABLED=0 GOOS=linux go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(SRC_DIR)/cpi_binary_linux $(REPO_ROOT)/bosh-cpi/cmd
 	@CGO_ENABLED=0 GOOS=darwin go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(SRC_DIR)/cpi_binary_darwin $(REPO_ROOT)/bosh-cpi/cmd
 
-# Run unit tests across all packages
-test: ensure-go unittests
+# Run unit tests across all packages (Go and Python release helpers)
+test: ensure-go unittests py-test
 
 unittests: ensure-go
 	@echo "[INFO] Running unit tests..."
@@ -77,6 +80,14 @@ unittests: ensure-go
 test-race: ensure-go
 	@echo "[INFO] Running unit tests with race detector..."
 	@go test -race -timeout=5m ./bosh-cpi/pkg/...
+
+py-test:
+	@echo "[INFO] Running Python release script unit tests..."
+	@command -v python3 >/dev/null 2>&1 || { echo "[ERROR] python3 is required for py-test"; exit 1; }
+	@set -e; for t in $(REPO_ROOT)/scripts/*_test.py; do \
+		echo "  == $$t"; \
+		python3 "$$t"; \
+	done
 
 # Run integration tests against target environment
 integration-test: ensure-go
@@ -104,8 +115,8 @@ format: ensure-go
 # Pre-check validations (format, license checks, go mod tidy)
 pre-check: ensure-go format check tidy
 
-# Check code correctness (go vet and golangci-lint)
-check: ensure-go
+# Check code correctness (go vet, golangci-lint, py-test, and release hygiene)
+check: ensure-go py-test release-hygiene
 	@echo "[INFO] Running go vet..."
 	@go vet ./bosh-cpi/...
 	@if ! command -v golangci-lint >/dev/null 2>&1; then \
@@ -130,16 +141,42 @@ tidy: ensure-go
 		go mod tidy; \
 	fi
 
-# Build BOSH release tarball
-release: release-binaries
-	@if ! command -v bosh >/dev/null 2>&1; then \
-		echo "[ERROR] 'bosh' CLI is required to create a release. Please install bosh CLI."; \
+# Assert Makefile's RELEASE_NAME matches config/final.yml's name
+release-name-check:
+	@final="$$(bosh int $(REPO_ROOT)/config/final.yml --path /name 2>/dev/null || bosh int $(REPO_ROOT)/config/final.yml --path /final_name)"; \
+	if [ "$$final" != "$(RELEASE_NAME)" ]; then \
+		echo "[ERROR] Makefile RELEASE_NAME ($(RELEASE_NAME)) does not match config/final.yml name ($$final)" >&2; \
 		exit 1; \
 	fi
-	@mkdir -p $(BIN_DIR)
-	@echo "[INFO] Creating BOSH CPI release tarball..."
-	@bosh create-release --force --tarball=$(BIN_DIR)/bosh_gdc_cpi_release_$(VERSION).tgz --version $(VERSION)
-	@echo "[INFO] Release tarball created: $(BIN_DIR)/bosh_gdc_cpi_release_$(VERSION).tgz"
+
+# Build a dev BOSH release tarball under dev_releases/$(RELEASE_NAME)/
+dev-release: release-name-check
+	@$(REPO_ROOT)/scripts/create-release dev
+
+# Build a versioned BOSH release tarball under releases/$(RELEASE_NAME)/
+release: release-name-check
+	@if [ -z "$(VERSION)" ] || [ "$(VERSION)" = "dev" ]; then \
+		echo "[ERROR] VERSION= required for a versioned release (e.g., make release VERSION=0.1.0)" >&2; \
+		echo "For a dev tarball use: make dev-release" >&2; \
+		exit 1; \
+	fi
+	@$(REPO_ROOT)/scripts/create-release $(VERSION)
+
+# Remove bin/, dev_releases/, and built tarballs/reports under releases/
+# (the committed final-release manifests in releases/ and .final_builds/ are kept: bosh.io needs them)
+release-clean:
+	@rm -rf $(BIN_DIR) $(REPO_ROOT)/dev_releases
+	@find $(REPO_ROOT)/releases -type f \( -name '*.tgz' -o -name '*.tgz.sha256' -o -name 'vulnerability-report-*.md' \) -delete 2>/dev/null || true
+	@echo "[INFO] Release artifacts cleaned"
+
+# Assert no loose CPI release tarballs exist at the repo root
+release-hygiene:
+	@found="$$($(RELEASE_ROOT_TGZ_FIND))"; \
+	if [ -n "$$found" ]; then \
+		echo "[ERROR] Loose release tarballs found at repo root:" >&2; \
+		echo "$$found" >&2; \
+		exit 1; \
+	fi
 
 # Run vulnerability scan on compiled CPI binary
 vuln-scan: ensure-go build-linux
@@ -159,8 +196,8 @@ coverage: ensure-go
 	@echo "[INFO] Coverage report available at: $(REPO_ROOT)/coverage/coverage.html"
 
 # Clean build artifacts and temporary files
-clean:
-	@rm -rf $(BIN_DIR) $(SRC_DIR) $(TOOLS_DIR) $(REPO_ROOT)/coverage $(REPO_ROOT)/.dev_builds $(REPO_ROOT)/dev_releases $(REPO_ROOT)/tmp
+clean: release-clean
+	@rm -rf $(SRC_DIR) $(TOOLS_DIR) $(REPO_ROOT)/coverage $(REPO_ROOT)/.dev_builds $(REPO_ROOT)/tmp
 
 # Display available targets
 help:
@@ -172,13 +209,17 @@ help:
 	@echo "  make build-linux       - Compile Linux CPI binary (bin/cpi)"
 	@echo "  make build-darwin      - Compile Darwin CPI binary (bin/cpi_darwin)"
 	@echo "  make release-binaries  - Compile CPI binaries into src/bosh-gdc-cpi for BOSH release"
-	@echo "  make test              - Run unit tests across all packages"
+	@echo "  make test              - Run Go and Python unit tests"
+	@echo "  make py-test           - Run Python SemVer and release artifact unit tests"
 	@echo "  make integration-test  - Run integration tests (use TEST_ARGS for flags/filters)"
 	@echo "  make pre-check         - Run code formatting, go vet, and go mod tidy"
 	@echo "  make format            - Format code (goimports, shfmt, whitespace cleanup)"
-	@echo "  make check             - Run go vet (and golangci-lint if installed)"
+	@echo "  make check             - Run go vet, golangci-lint, py-test, and release-hygiene"
 	@echo "  make tidy              - Run go mod tidy"
-	@echo "  make release           - Build CPI binaries and create BOSH release tarball"
+	@echo "  make dev-release       - Build a dev BOSH release tarball under dev_releases/"
+	@echo "  make release           - Build a versioned BOSH release tarball (VERSION=X.Y.Z)"
+	@echo "  make release-clean     - Clean bin/, dev_releases/, and built tarballs under releases/ (keeps final-release manifests)"
+	@echo "  make release-hygiene   - Verify no loose release tarballs exist at repo root"
 	@echo "  make vuln-scan         - Run govulncheck vulnerability scan on compiled binary"
 	@echo "  make coverage          - Generate HTML test coverage report"
 	@echo "  make clean             - Clean built binaries and temporary artifacts"
