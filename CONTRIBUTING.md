@@ -19,3 +19,4 @@ We use the [GitHub issue tracker](https://github.com/cloudfoundry/bosh-gdc-cpi-r
 2. Implement your feature or fix and include appropriate unit test coverage.
 3. Ensure all formatting checks, static analysis, and tests pass locally.
 4. Commit your changes with a sign-off trailer (`git commit -s`) and open a Pull Request targeting the `main` branch of [`cloudfoundry/bosh-gdc-cpi-release`](https://github.com/cloudfoundry/bosh-gdc-cpi-release).
+5. Your PR title becomes a line in the next release's **What's Changed** notes: use a Conventional Commits title that describes the user-visible change (e.g. `fix(disk): retry snapshot when backup is still provisioning`) and add a label (`enhancement`, `bug`, `security`, `ci`, `documentation`, `dependencies`, or `skip-changelog`). See [Release Notes](README.md#release-notes) in the README.
