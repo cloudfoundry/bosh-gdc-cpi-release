@@ -1,0 +1,6 @@
+builds:
+  1e02965354bc879783d4f01fe1e951998dae3161fddc6ee3553371a4af9d803b:
+    version: 1e02965354bc879783d4f01fe1e951998dae3161fddc6ee3553371a4af9d803b
+    blobstore_id: v0.1.0/job-gdc_cpi-1e02965354bc879783d4f01fe1e951998dae3161fddc6ee3553371a4af9d803b.tgz
+    sha1: sha256:bfae2823697bf4b412aca9b9e56e1e89e13712f9bf1cabdcaaee205d08b6e904
+format-version: "2"

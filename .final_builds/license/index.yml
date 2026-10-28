@@ -1,0 +1,6 @@
+builds:
+  d0df1a42b66dd34aea649dc14f8e0969a8becc3b178433ef1e306221b718a517:
+    version: d0df1a42b66dd34aea649dc14f8e0969a8becc3b178433ef1e306221b718a517
+    blobstore_id: v0.1.0/license-d0df1a42b66dd34aea649dc14f8e0969a8becc3b178433ef1e306221b718a517.tgz
+    sha1: sha256:0ba97494952a36f53851cefb516fa56a1a23f33c2f6a79ce97e0c32b2bcc9434
+format-version: "2"
