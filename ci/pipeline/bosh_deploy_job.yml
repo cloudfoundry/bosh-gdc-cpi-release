@@ -1,0 +1,117 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+- type: replace
+  path: /jobs/name=bosh-deployment
+  value:
+    name: bosh-deployment
+    # No concurrent execution
+    serial: true
+    # When this job is running, other jobs with the `deployment-lock` or `bats-lock` tags have to wait
+    serial_groups: [deployment-lock, bats-lock]
+    plan:
+    - get: cicd-deployment-logs-bootstrap
+      trigger: true
+      passed: [bosh-bootstrap]
+    - get: cfbosh-image
+    - get: cicd-deployment-artifacts-bootstrap
+      params:
+        unpack: true
+    - get: noble-stemcells
+    - get: bosh-cpi-releases
+    - task: create-env
+      image: cfbosh-image
+      config:
+        platform: linux
+        inputs:
+        - name: cicd-deployment-logs-bootstrap
+        - name: cicd-deployment-artifacts-bootstrap
+        - name: noble-stemcells
+        - name: bosh-cpi-releases
+        outputs:
+        - name: log_dir
+        params:
+          GCS_SERVICE_ACCOUNT_KEY: ((credentials.cfbosh-cicd-sa_key))
+        run:
+          path: bash
+          args:
+          - -ce
+          - |
+            set -e
+
+            root_dir=$(pwd)
+
+            log_file=$(find cicd-deployment-logs-bootstrap -type f -name "log_*.md" -printf "%f")
+            echo "[INFO] Got deployment log: ${log_file}"
+            cp cicd-deployment-logs-bootstrap/${log_file} log_dir/${log_file}
+
+            build_id=$(awk '/Build ID:/ {print $4}' log_dir/${log_file})
+            echo "[INFO] Got build ID: ${build_id}"
+
+            cp -r cicd-deployment-artifacts-bootstrap/ cicd-deployment-artifacts/
+
+            noble_stemcell_tarball=$(find noble-stemcells -type f -name "bosh-stemcell-*-gdch-kvm-ubuntu-noble.tgz" -printf "%f")
+            mkdir -p cicd-deployment-artifacts/noble-stemcells/
+            echo "gs://cfbosh-cicd/stemcells/use_metadata_server/${noble_stemcell_tarball}" > cicd-deployment-artifacts/noble-stemcells/url
+            echo "* BOSH Noble stemcell tarball: ${noble_stemcell_tarball}" >> log_dir/${log_file}
+
+            cpi_release_tarball=$(find bosh-cpi-releases -type f -name "bosh_gdch_cpi_release_*.tgz" -printf "%f")
+            mkdir -p cicd-deployment-artifacts/cpi-releases/
+            mv bosh-cpi-releases/${cpi_release_tarball} cicd-deployment-artifacts/cpi-releases/
+            echo "gs://cfbosh-cicd/cpi_releases/${cpi_release_tarball}" > cicd-deployment-artifacts/cpi-releases/url
+            echo "* BOSH CPI release tarball: ${cpi_release_tarball}" >> log_dir/${log_file}
+
+            echo "[INFO] Authenticating Concourse container as CI Service Account to access the CI GCS bucket"
+            set +x # Hide service account key - otherwise prints to logs
+            printf '%s' "$GCS_SERVICE_ACCOUNT_KEY" > /tmp/gcs_key.json
+            gcloud auth activate-service-account --key-file=/tmp/gcs_key.json --quiet >/dev/null 2>&1
+            export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcs_key.json
+
+            echo "[INFO] Starting BOSH env creation"
+
+            cd cicd-deployment-artifacts/bosh-deployment-assets/gdch/scripts
+            source ./set-env-var-on-long-running-cf.sh
+
+            export PATH_TO_GDCH_CPI_RELEASE_TARBALL="${root_dir}/cicd-deployment-artifacts/cpi-releases/${cpi_release_tarball}"
+            export PATH_TO_GDCH_STEMCELL_TARBALL="${root_dir}/noble-stemcells/${noble_stemcell_tarball}"
+            export BOSH_DEPLOYMENT_ASSETS_DIR="${root_dir}/cicd-deployment-artifacts/bosh-deployment-assets"
+            export KUBECONFIGS_DIRECTORY="${BOSH_DEPLOYMENT_ASSETS_DIR}/kubeconfigs"
+
+            echo "[INFO] Initializing GDC session and fetching fresh admin kubeconfigs"
+            ./setup-session.sh --is-long-running-cf --non-interactive --keep-gdcloud-config
+
+            ./create-env.sh --use-metadata-server --disable-director-vmea --use-disk-hotplug --use-persistent-disk --is-long-running-cf --from-customer-external --use-internal-dns --non-interactive --no-color
+            echo "-> BOSH env creation: DONE" >> ${root_dir}/log_dir/${log_file}
+
+            cd "${root_dir}/cicd-deployment-artifacts"
+
+            deployment_artifact=artifacts_${build_id}_bosh.tar.gz
+            tar -czvf ${deployment_artifact} bosh-deployment-assets/ \
+            cpi-releases/ \
+            noble-stemcells/
+            cp ${deployment_artifact} ${root_dir}/log_dir/
+
+            cd ${root_dir}
+            echo "-> Prepared deployment artifacts ${deployment_artifact} with BOSH env creation context" >> log_dir/${log_file}
+
+            echo "[INFO] Updated deployment log log_dir/${log_file}"
+    - put: cicd-deployment-artifacts-bosh
+      params:
+        file: log_dir/artifacts_*_bosh.tar.gz
+    - put: cicd-deployment-logs-bosh
+      params:
+        file: log_dir/log_*.md
+    - put: cicd-deployment-logs
+      params:
+        file: log_dir/log_*.md

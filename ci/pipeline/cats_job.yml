@@ -1,0 +1,133 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+- type: replace
+  path: /jobs/name=run-cats
+  value:
+    name: run-cats
+    # No concurrent execution
+    serial: true
+    # When this job is running, new CF deployment has to wait
+    serial_groups: [cats-lock]
+    plan:
+    - get: cicd-deployment-logs-cf
+      trigger: true
+      passed: [cf-deployment]
+    # Not used by the tasks: carries the run's BOSH-stage version through run-cats
+    # so pre-release-fan-in can require the same run to pass run-bats and run-cats
+    - get: cicd-deployment-logs-bosh
+      passed: [cf-deployment]
+    - get: cfbosh-image
+    - get: cicd-deployment-artifacts-cf
+      params:
+        unpack: true
+    - task: run-cats
+      image: cfbosh-image
+      # CATS_TIMEOUT is 3h; leave headroom for setup and artifact upload.
+      timeout: 4h
+      config:
+        platform: linux
+        inputs:
+        - name: cicd-deployment-logs-cf
+        - name: cicd-deployment-artifacts-cf
+        outputs:
+        - name: log_dir
+        run:
+          path: bash
+          args:
+          - -c
+          - |
+            set -euo pipefail
+
+            root_dir=$(pwd)
+
+            log_file=$(find cicd-deployment-logs-cf -type f -name "log_*.md" -printf "%f")
+            echo "[INFO] Got deployment log: ${log_file}"
+            cp cicd-deployment-logs-cf/${log_file} log_dir/${log_file}
+
+            build_id=$(awk '/Build ID:/ {print $4}' log_dir/${log_file})
+            echo "[INFO] Got build ID: ${build_id}"
+
+            cp -r cicd-deployment-artifacts-cf/ cicd-deployment-artifacts/
+            cf_assets_dir="${root_dir}/cicd-deployment-artifacts/cf-deployment-assets"
+            vars_store="${cf_assets_dir}/vars_store-cf.yml"
+
+            run_id=$(date +%s)
+            echo "[INFO] Start running Cloud Foundry acceptance tests (CATS) with run ID ${run_id}"
+
+            # Trust CF's router CA (from the CF vars store) instead of skipping TLS verification.
+            bosh int "${vars_store}" --path /haproxy_ca/ca >/usr/local/share/ca-certificates/cf-haproxy-ca.crt
+            update-ca-certificates >/dev/null
+
+            # CATS needs Go >= 1.22; the cfbosh image ships an older Go.
+            go_version=1.22.9
+            go_sha256=84a8f05b7b969d8acfcaf194ce9298ad5d3ddbfc7034930c280006b5c85a574c
+            curl -fsSL "https://go.dev/dl/go${go_version}.linux-amd64.tar.gz" -o /tmp/go.tgz
+            echo "${go_sha256}  /tmp/go.tgz" | sha256sum -c -
+            tar -C /tmp -xzf /tmp/go.tgz
+            export PATH="/tmp/go/bin:${PATH}" GOTOOLCHAIN=local
+            go version
+
+            cats_run_dir="${root_dir}/cicd-deployment-artifacts/cats-run"
+            mkdir -p "${cats_run_dir}"
+
+            cd "${cf_assets_dir}/gdch/scripts"
+            source ./set-env-var-on-long-running-cf.sh
+            export PATH_TO_CF_VARS_STORE_FILE="${vars_store}"
+            export PATH_TO_CATS_CONFIG=/tmp/cats-config.json
+            export CATS_ARTIFACTS_DIRECTORY="${cats_run_dir}/logs"
+            export SKIP_SSL_VALIDATION=false
+
+            # Express scope: apps, detect and HTTP/1 routing, serial.
+            # run-cats.sh reuses an existing config, so generate it, then narrow it.
+            ./run-cats.sh --gen-config-only --no-color
+            jq '.include_http2_routing = false | .credhub_mode = ""' "${PATH_TO_CATS_CONFIG}" >/tmp/cats-config.express.json
+            mv /tmp/cats-config.express.json "${PATH_TO_CATS_CONFIG}"
+            jq -r 'to_entries[] | select(.key | startswith("include_")) | select(.value == true) | .key' "${PATH_TO_CATS_CONFIG}"
+
+            echo "* CATS CF system domain: ${CF_SYSTEM_DOMAIN}" >>"${root_dir}/log_dir/${log_file}"
+            set +e
+            ./run-cats.sh --no-color 2>&1 | tee /tmp/run-cats_${run_id}.log
+            cats_exit_code=${PIPESTATUS[0]}
+            set -e
+
+            # Keep only the ginkgo summary in the shared artifact; the full log stays in the build output.
+            grep -E "^(Ran [0-9]+ of|SUCCESS!|FAIL!|\[FAIL\]|Test Suite (Passed|Failed))" /tmp/run-cats_${run_id}.log >"${cats_run_dir}/summary_${run_id}.txt" || true
+            echo "exit_code=${cats_exit_code}" >>"${cats_run_dir}/summary_${run_id}.txt"
+
+            cd "${root_dir}"
+            if [ "${cats_exit_code}" -ne 0 ]; then
+              echo "-> CATS run ${run_id}: FAILED (exit code ${cats_exit_code})" >>log_dir/${log_file}
+            else
+              echo "-> CATS run ${run_id}: DONE" >>log_dir/${log_file}
+            fi
+
+            cd cicd-deployment-artifacts/
+            deployment_artifact=artifacts_${build_id}_cats-${run_id}.tar.gz
+            tar -czf ${deployment_artifact} cf-deployment-assets/ cats-run/
+            cp ${deployment_artifact} ${root_dir}/log_dir/
+
+            cd ${root_dir}
+            echo "-> Prepared artifacts ${deployment_artifact} with CATS run" >>log_dir/${log_file}
+            echo "[INFO] Updated deployment log log_dir/${log_file}"
+            exit ${cats_exit_code}
+    - put: cicd-deployment-artifacts-cats
+      params:
+        file: log_dir/artifacts_*_cats-*.tar.gz
+    - put: cicd-deployment-logs-cats
+      params:
+        file: log_dir/log_*.md
+    - put: cicd-deployment-logs
+      params:
+        file: log_dir/log_*.md

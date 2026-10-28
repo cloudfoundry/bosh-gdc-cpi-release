@@ -1,0 +1,113 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+- type: replace
+  path: /jobs/name=bosh-bootstrap
+  value:
+    name: bosh-bootstrap
+    # No concurrent execution
+    serial: true
+    # When this job is running, other jobs with the `deployment-lock` tag have to wait
+    serial_groups: [deployment-lock]
+    plan:
+    - get: cicd-deployment-logs
+      trigger: true
+      passed: [start-deployments]
+    - get: cfbosh-image
+    - get: bosh-deployment-assets
+      params:
+        unpack: true
+    - task: bootstrap
+      image: cfbosh-image
+      config:
+        platform: linux
+        inputs:
+        - name: cicd-deployment-logs
+        - name: bosh-deployment-assets
+        outputs:
+        - name: log_dir
+        params:
+          GCS_SERVICE_ACCOUNT_KEY: ((credentials.cfbosh-cicd-sa_key))
+        run:
+          path: bash
+          args:
+          - -ce
+          - |
+            set -e
+
+            root_dir=$(pwd)
+
+            log_file=$(find cicd-deployment-logs -type f -name "log_*.md" -printf "%f")
+            echo "[INFO] Got deployment log: ${log_file}"
+            cp cicd-deployment-logs/${log_file} log_dir/${log_file}
+
+            build_id=$(awk '/Build ID:/ {print $4}' log_dir/${log_file})
+            echo "[INFO] Got build ID: ${build_id}"
+
+            bosh_deploy_assets_tarball=$(find bosh-deployment-assets -type f -name "*.tar" -printf "%f")
+            echo "* BOSH deployment assets tarball: ${bosh_deploy_assets_tarball}" >> log_dir/${log_file}
+
+            cd bosh-deployment-assets/gdch/scripts
+
+            echo "[INFO] Setting up BOSH bootstrap environment variables"
+            source ./set-env-var-on-long-running-cf.sh
+            export BOSH_DEPLOYMENT_ASSETS_DIR="${root_dir}/bosh-deployment-assets"
+            export KUBECONFIGS_DIRECTORY="${BOSH_DEPLOYMENT_ASSETS_DIR}/kubeconfigs"
+            export MANAGED_DNS_ZONE="((gdch_env.managed_dns_zone))"
+            export DIRECTOR_DNS="((gdch_env.director_dns_prefix)).${MANAGED_DNS_ZONE}"
+            export PA_USER="((gdch_env.pa_user))"
+            export LB_STATIC_IP_PARENT_SUBNET="((gdch_env.lb_static_ip_parent_subnet))"
+            ./bootstrap.sh --print-env
+
+            echo "[INFO] Authenticating Concourse container as CI Service Account to access the CI GCS bucket"
+            set +x # Hide service account key - otherwise prints to logs
+            printf '%s' "$GCS_SERVICE_ACCOUNT_KEY" > /tmp/gcs_key.json
+            gcloud auth activate-service-account --key-file=/tmp/gcs_key.json --quiet >/dev/null 2>&1
+            export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcs_key.json
+
+            echo "[INFO] Initializing GDC session and fetching fresh admin kubeconfigs"
+            ./setup-session.sh --is-long-running-cf --non-interactive --keep-gdcloud-config
+
+
+            echo "[INFO] Starting BOSH bootstrap"
+            ./bootstrap.sh \
+              --skip-login \
+              --skip-project-creation \
+              --managed-dns-zone "${MANAGED_DNS_ZONE}" \
+              --director-dns-prefix "((gdch_env.director_dns_prefix))" \
+              --use-lb-static-ip \
+              --lb-static-ip-parent-subnet "${LB_STATIC_IP_PARENT_SUBNET}" \
+              --is-long-running-cf \
+              --non-interactive \
+              -f \
+              --no-color
+            echo "-> BOSH bootstrap: DONE" >> ${root_dir}/log_dir/${log_file}
+
+            cd ${root_dir}
+
+            deployment_artifact=artifacts_${build_id}_bootstrap.tar.gz
+            tar -czvf ${deployment_artifact} bosh-deployment-assets/
+            cp ${deployment_artifact} log_dir/
+            echo "-> Prepared deployment artifacts ${deployment_artifact} with BOSH bootstrap context" >> log_dir/${log_file}
+
+            echo "[INFO] Updated deployment log log_dir/${log_file}"
+    - put: cicd-deployment-artifacts-bootstrap
+      params:
+        file: log_dir/artifacts_*_bootstrap.tar.gz
+    - put: cicd-deployment-logs-bootstrap
+      params:
+        file: log_dir/log_*.md
+    - put: cicd-deployment-logs
+      params:
+        file: log_dir/log_*.md
