@@ -2,9 +2,7 @@ module github.com/cloudfoundry/bosh-gdc-cpi-release
 
 // `version` and `sdks` for `go_download_sdk` needs to be synced with the Go minor version here
 // LINT.IfChange
-go 1.25.0
-
-toolchain go1.25.8
+go 1.26.10
 
 // LINT.ThenChange(/build/external/go_sdk.bzl:go_sdk)
 
@@ -21,10 +19,10 @@ require (
 	github.com/prometheus/client_golang v1.22.0 // indirect
 	github.com/prometheus/common v0.65.0 // indirect
 	github.com/spf13/pflag v1.0.7 // indirect
-	golang.org/x/crypto v0.50.0 // indirect
-	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.36.0
-	golang.org/x/term v0.42.0 // indirect
+	golang.org/x/term v0.47.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/inf.v0 v0.9.1 // indirect
@@ -103,8 +101,8 @@ require (
 	go.opentelemetry.io/otel/sdk v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.7.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
 	k8s.io/cluster-bootstrap v0.32.4 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.7.0 // indirect

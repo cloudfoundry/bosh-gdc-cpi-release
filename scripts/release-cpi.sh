@@ -36,6 +36,8 @@ FORCE_RELEASE="${FORCE_RELEASE:-false}"
 # Commit releases/ + .final_builds/ (bosh.io final-release metadata) back to this branch
 PUSH_FINAL_RELEASE_METADATA="${PUSH_FINAL_RELEASE_METADATA:-${GITHUB_ACTIONS:-false}}"
 FINAL_RELEASE_METADATA_BRANCH="${FINAL_RELEASE_METADATA_BRANCH:-main}"
+# Fail the candidate build when govulncheck finds a vulnerability that has a published fix
+VULN_FAIL_ON_FIXABLE="${VULN_FAIL_ON_FIXABLE:-true}"
 
 TMP_DIR="$(mktemp -d -t release-cpi-XXXXXX)"
 cleanup() {
@@ -58,6 +60,7 @@ Options:
   --no-github-release       Skip publishing GitHub Release
   --force-release           Force release publishing even if no new commits exist since latest tag
   --no-push-metadata        Do not commit/push releases/ and .final_builds/ (bosh.io metadata)
+  --allow-fixable-vulns     Do not fail when govulncheck reports vulnerabilities that have a fix
   -h, --help                Show this help message
 EOF
 }
@@ -102,6 +105,10 @@ while [[ $# -gt 0 ]]; do
     ;;
   --no-push-metadata)
     PUSH_FINAL_RELEASE_METADATA="false"
+    shift
+    ;;
+  --allow-fixable-vulns)
+    VULN_FAIL_ON_FIXABLE="false"
     shift
     ;;
   -h | --help)
@@ -237,25 +244,24 @@ generate_vuln_report() {
     go run golang.org/x/vuln/cmd/govulncheck@latest -mode=binary -json "${binary_path}" >"${json_output}" || true
   fi
 
-  {
-    echo "### Vulnerability Report for BOSH CPI"
-    echo "**Version:** ${version}"
-    echo "**Scan Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-    echo ""
-    echo "| Code | Link |"
-    echo "| :--- | :--- |"
+  local binary_go_version
+  binary_go_version="$(go version "${binary_path}" 2>/dev/null | awk '{print $2}' || true)"
 
-    local vulnerabilities
-    vulnerabilities="$(jq -r '.finding.osv? // empty' "${json_output}" 2>/dev/null | sort -u || true)"
-    if [[ -n "${vulnerabilities}" ]]; then
-      while read -r id; do
-        [[ -z "${id}" ]] && continue
-        echo "| ${id} | [${id}](https://pkg.go.dev/vuln/${id}) |"
-      done <<<"${vulnerabilities}"
-    else
-      echo "| None | No vulnerabilities found |"
-    fi
-  } >"${report_path}"
+  # Render the per-module report (fixable vs. no-upstream-fix) and, unless explicitly disabled,
+  # refuse to ship a binary that is behind on a published fix (stdlib = Go toolchain upgrade).
+  local gate_args=()
+  if [[ "${VULN_FAIL_ON_FIXABLE}" == "true" ]]; then
+    gate_args+=("--fail-on-fixable")
+  fi
+  if ! python3 "${SCRIPT_DIR}/_vuln_report.py" "${json_output}" \
+    --version "${version}" \
+    --go-version "${binary_go_version}" \
+    --output "${report_path}" \
+    "${gate_args[@]}"; then
+    echo "[ERROR] Release blocked: fixable vulnerabilities are linked into ${binary_path}. Upgrade the Go toolchain (go.mod 'go' directive) and/or the listed modules, or set VULN_FAIL_ON_FIXABLE=false to override." >&2
+    cat "${report_path}" >&2
+    exit 1
+  fi
 
   echo "[INFO] Vulnerability scan report generated at ${report_path}:"
   cat "${report_path}"

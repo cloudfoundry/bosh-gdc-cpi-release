@@ -123,11 +123,21 @@ make dev-release
 
 ### 5. Vulnerability Scanning
 
-Run `govulncheck` on the compiled Linux CPI binary:
+Run `govulncheck` on the compiled Linux CPI binary and render the report:
 
 ```bash
-make vuln-scan
+make vuln-scan                          # fails if any finding has a published fix
+make vuln-scan VULN_FAIL_ON_FIXABLE=false   # report only
 ```
+
+**How the scan works.** `govulncheck -mode=binary` performs a *symbol-level* scan of the linked binary against the Go vulnerability database (https://vuln.go.dev): a finding means the vulnerable function is linked into `cpi_binary_linux` (dead code is already eliminated by the linker), not that the CPI necessarily calls it. [`scripts/_vuln_report.py`](scripts/_vuln_report.py) turns the JSON output into `vulnerability-report-<VERSION>.md`, grouped per module with the **linked version**, the **fixed-in version**, CVE/GHSA aliases and a summary, split into two sections:
+
+- **Fixable — upgrade required**: the database records a fixed version. `stdlib` findings are fixed by bumping the Go toolchain (the exact patch version in the `go` directive of [`go.mod`](go.mod), which `actions/setup-go` and the Makefile's hermetic toolchain both honour); other modules by `go get <module>@<fixed>`.
+- **No upstream fix available**: advisories without a fixed version (end-of-life or unmaintained packages pulled in transitively), listed for transparency and tracked as dependency-roadmap items.
+
+**Release gate.** Stage 2 of the release pipeline runs the same scan via `scripts/release-cpi.sh --stage candidate` with `VULN_FAIL_ON_FIXABLE=true` (default): a candidate whose binary carries a vulnerability with a published fix **fails the build** with the required upgrades printed (`upgrade: stdlib -> v1.26.9, golang.org/x/net -> v0.62.0, …`). Use `--allow-fixable-vulns` / `VULN_FAIL_ON_FIXABLE=false` only as a conscious, temporary override. Findings without an upstream fix never block a release but appear in the report attached to the GitHub Release and uploaded to `gs://…/vulnerability-reports/cpi/<VERSION>.md`.
+
+> **Keep the toolchain current.** Most historical findings were Go standard-library CVEs caused by building with an outdated patch release. The `go` directive in `go.mod` pins the exact toolchain (e.g. `go 1.26.10`); bump it (and `GO_VERSION` in the [`Makefile`](Makefile)) whenever a new Go patch release ships.
 
 ### 6. Clean Artifacts
 
@@ -189,7 +199,7 @@ The **`CFBOSH GDC release pipeline`** automates end-to-end BOSH CPI release pack
      - Once the workflow is on the default branch (`main`), authorized maintainers can comment `/test-release` (or `/test-release skip-concourse`, `/test-release version=0.1.0`) on a Pull Request. All PR comment runs strictly enforce **`snapshot` mode**.
 - **Pipeline Stages**:
   1. **Authorize & Resolve SemVer**: Verifies maintainer authorization and derives the target SemVer version/tag (`vX.Y.Z` in `release` mode or `vX.Y.Z-dev.<sha>` in `snapshot` mode) directly from repository Git tags via `scripts/_release_tag.py`.
-  2. **Build Candidate CPI & Scan Vulnerabilities**: Compiles Linux and Darwin CPI binaries (`make release-binaries`), creates the BOSH CPI release archive (`scripts/create-release`), verifies `release.MF` identity (`name: bosh-gdc-cpi` and `version`) and SHA-256 digest via `scripts/_release_artifact.py`, runs `govulncheck` against the Linux CPI binary, and uploads candidate artifacts to `gs://cfbosh-cicd/`.
+  2. **Build Candidate CPI & Scan Vulnerabilities**: Compiles Linux and Darwin CPI binaries (`make release-binaries`), creates the BOSH CPI release archive (`scripts/create-release`), verifies `release.MF` identity (`name: bosh-gdc-cpi` and `version`) and SHA-256 digest via `scripts/_release_artifact.py`, runs `govulncheck` against the Linux CPI binary (failing the build if any finding has a published fix — see [Vulnerability Scanning](#5-vulnerability-scanning)), and uploads candidate artifacts to `gs://cfbosh-cicd/`.
   3. **Run Concourse Deployment Pipeline (GKE)**: Connects to the GKE Concourse cluster (`cfbosh`), renders and updates the `cfbosh-deployment` pipeline (`ci/configure.sh`), checks the `bosh-cpi-releases` GCS resource, and triggers/watches the full Concourse pipeline (`start-deployments` &rarr; `bosh-bootstrap` &rarr; `bosh-deployment` &rarr; `run-bats` / `cf-deployment` &rarr; `run-cats` &rarr; `pre-release-fan-in` &rarr; `promote-candidate`) via `ci/run-pipeline.sh`. Can be bypassed by setting `skip_concourse: true` in case of underlying infrastructure issues.
   4. **Release CPI Artifact (GitHub & GCS)**: In `release` mode (on `main`), publishes the verified CPI release artifacts and vulnerability report to GitHub Releases (creating the `vX.Y.Z` tag) and the external GCS bucket (`gs://gdc-external-sap/`). In `snapshot` mode (including all PR runs), skips external GitHub Release creation, git tagging, and external GCS promotion.
   5. **Update Release Pipeline Dashboard**: Appends the run telemetry and stage statuses to `dashboard/data/runs.json`, generates the GitHub Actions job summary, and deploys the updated dashboard to GitHub Pages.
@@ -234,7 +244,7 @@ Each run of the `CFBOSH GDC release pipeline` produces and verifies the followin
 | **`bosh-gdc-cpi-<VERSION>.tgz`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases),<br>`gs://cfbosh-cicd/cpi_releases/`,<br>`gs://gdc-external-sap/cpi_releases/` | Official SemVer BOSH CPI release tarball containing the `gdc_cpi` job, `bosh-gdc-cpi` package (Linux & Darwin binaries), and `release.MF` manifest. |
 | **`bosh-gdc-cpi-<VERSION>.tgz.sha256`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases),<br>`gs://cfbosh-cicd/cpi_releases/`,<br>`gs://gdc-external-sap/cpi_releases/` | SHA-256 checksum file (`<sha256>  bosh-gdc-cpi-<VERSION>.tgz`) verified by `scripts/_release_artifact.py`. |
 | **`bosh_gdch_cpi_release_<VERSION>.tgz`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases),<br>`gs://cfbosh-cicd/cpi_releases/`,<br>`gs://gdc-external-sap/cpi_releases/` | CPI release tarball named for compatibility with the Concourse `bosh-cpi-releases` GCS resource (`cpi_releases/bosh_gdch_cpi_release_(.*).tgz`). |
-| **`vulnerability-report-<VERSION>.md`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases),<br>`gs://cfbosh-cicd/vulnerability-reports/cpi/<VERSION>.md`,<br>`gs://gdc-external-sap/vulnerability-reports/cpi/<VERSION>.md` | Markdown vulnerability scan report generated by running `govulncheck -mode=binary` against the compiled Linux CPI binary. |
+| **`vulnerability-report-<VERSION>.md`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases),<br>`gs://cfbosh-cicd/vulnerability-reports/cpi/<VERSION>.md`,<br>`gs://gdc-external-sap/vulnerability-reports/cpi/<VERSION>.md` | Markdown vulnerability scan report (`govulncheck -mode=binary` on the Linux CPI binary, rendered by `scripts/_vuln_report.py`): per-module findings with linked/fixed versions and CVE aliases, split into *fixable* (blocks the release) and *no upstream fix*. See [Vulnerability Scanning](#5-vulnerability-scanning). |
 | **`job-gdc_cpi-<fingerprint>.tgz`**,<br>**`package-bosh-gdc-cpi-<fingerprint>.tgz`**,<br>**`license-<fingerprint>.tgz`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases) (`v<VERSION>` assets) | BOSH final-build blobs referenced by the committed `.final_builds/**/index.yml` (`blobstore_id: v<VERSION>/<asset>`). They make the release rebuildable by [bosh.io](https://bosh.io/releases) from metadata alone (see below). |
 | **`releases/bosh-gdc-cpi/bosh-gdc-cpi-<VERSION>.yml`**,<br>**`releases/bosh-gdc-cpi/index.yml`**,<br>**`.final_builds/**/index.yml`** | Committed to `main` (`chore(release): cut bosh-gdc-cpi v<VERSION>`) | BOSH final-release metadata generated by `bosh finalize-release` ([`scripts/_final_release.py`](scripts/_final_release.py)). |
 | **Concourse Deployment Logs** | `gs://cfbosh-cicd/cicd-deployment-logs/log_<TIMESTAMP>.md` | Execution log and build ID tracking artifact generated by the Concourse `cfbosh-deployment` pipeline. |
