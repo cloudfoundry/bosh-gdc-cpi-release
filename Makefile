@@ -19,7 +19,7 @@ LDFLAGS       ?= -s -w
 GOFLAGS       ?= -trimpath -buildvcs=false
 VERSION       ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
 
-GO_VERSION    ?= 1.25.8
+GO_VERSION    ?= 1.26.10
 export GOTOOLCHAIN ?= local
 
 # Verify Go version is at least 1.24 (required by go.mod 1.25.0)
@@ -178,14 +178,21 @@ release-hygiene:
 		exit 1; \
 	fi
 
-# Run vulnerability scan on compiled CPI binary
+# Run vulnerability scan on compiled CPI binary and render the per-module report
+# (fails when a finding has a published fix; set VULN_FAIL_ON_FIXABLE=false to report only)
+VULN_FAIL_ON_FIXABLE ?= true
 vuln-scan: ensure-go build-linux
 	@echo "[INFO] Running govulncheck on $(BIN_DIR)/cpi..."
-	@if command -v govulncheck >/dev/null 2>&1; then \
-		govulncheck -mode=binary $(BIN_DIR)/cpi; \
-	else \
-		go run golang.org/x/vuln/cmd/govulncheck@latest -mode=binary $(BIN_DIR)/cpi; \
+	@if ! command -v govulncheck >/dev/null 2>&1; then \
+		echo "[INFO] Installing govulncheck..."; \
+		mkdir -p $(TOOLS_BIN_DIR); \
+		GOBIN=$(abspath $(TOOLS_BIN_DIR)) go install golang.org/x/vuln/cmd/govulncheck@latest; \
 	fi
+	@govulncheck -mode=binary -json $(BIN_DIR)/cpi > $(BIN_DIR)/govulncheck.json || true
+	@python3 $(REPO_ROOT)/scripts/_vuln_report.py $(BIN_DIR)/govulncheck.json \
+		--version "$(VERSION)" --go-version "$$(go version $(BIN_DIR)/cpi | awk '{print $$2}')" \
+		--output $(BIN_DIR)/vulnerability-report.md $(if $(filter true,$(VULN_FAIL_ON_FIXABLE)),--fail-on-fixable,)
+	@cat $(BIN_DIR)/vulnerability-report.md
 
 # Generate code coverage report
 coverage: ensure-go
