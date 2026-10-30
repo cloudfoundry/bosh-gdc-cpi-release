@@ -146,12 +146,6 @@ resources:
       bucket: cfbosh-cicd
       json_key: ((credentials.cfbosh-cicd-sa_key))
       regexp: cf-deployments/cf_deployment_(.*).tar
-  - name: noble-stemcells
-    type: gcs-resource
-    source:
-      bucket: cfbosh-cicd
-      json_key: ((credentials.cfbosh-cicd-sa_key))
-      regexp: stemcells/use_metadata_server/bosh-stemcell-([0-9]{8}-.*)-gdch-kvm-ubuntu-noble.tgz
   - name: bosh-cpi-releases
     type: gcs-resource
     source:

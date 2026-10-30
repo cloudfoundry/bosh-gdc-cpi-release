@@ -21,3 +21,5 @@ gdch_env:
   lb_static_ip_parent_subnet: data-external2-us-west6-b-root-cidr
 credentials:
   cfbosh-cicd-sa_key: ((cicd_sa_key_json))
+stemcell:
+  script: ((stemcell_script))

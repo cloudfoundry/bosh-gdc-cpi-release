@@ -93,22 +93,144 @@ TIMESTAMP="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 TRIGGER="${GITHUB_EVENT_NAME:-manual}"
 ACTOR="${GITHUB_ACTOR:-maintainer}"
 
+GH_AUTH_HEADER=()
+if [[ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]]; then
+  GH_AUTH_HEADER=(-H "Authorization: Bearer ${GH_TOKEN:-${GITHUB_TOKEN}}")
+fi
+
 # Merge the live runs.json from GitHub Pages (runs recorded by earlier pipeline runs that may
 # not be committed yet) with the committed file, so neither writer can drop the other's runs.
 # Live entries win on conflict. Then prune any runs that were deleted from GitHub Actions.
 if curl -fsSL --max-time 10 "https://cloudfoundry.github.io/bosh-gdc-cpi-release/data/runs.json" -o "${RUNS_JSON}.remote" 2>/dev/null; then
   if jq -e 'type == "array"' "${RUNS_JSON}.remote" >/dev/null 2>&1; then
-    jq -s '(.[1] + .[0]) | unique_by(.id | tostring)' "${RUNS_JSON}" "${RUNS_JSON}.remote" >"${RUNS_JSON}.merged" &&
+    jq -s '
+      (.[1] + .[0])
+      | group_by(.id | tostring)
+      | map(sort_by(if .status == "failure" then 0 elif .status == "success" then 1 else 2 end) | .[0])
+    ' "${RUNS_JSON}" "${RUNS_JSON}.remote" >"${RUNS_JSON}.merged" &&
       mv "${RUNS_JSON}.merged" "${RUNS_JSON}"
   fi
   rm -f "${RUNS_JSON}.remote"
 fi
 
-if curl -fsSL --max-time 10 "https://api.github.com/repos/${REPO}/actions/workflows/release-pipeline.yaml/runs?per_page=100" -o "${RUNS_JSON}.gh" 2>/dev/null; then
+if curl -fsSL --max-time 10 "${GH_AUTH_HEADER[@]}" "https://api.github.com/repos/${REPO}/actions/workflows/release-pipeline.yaml/runs?per_page=100" -o "${RUNS_JSON}.gh" 2>/dev/null; then
   LIVE_IDS="$(jq -c '[.workflow_runs[]?.id | tostring]' "${RUNS_JSON}.gh" 2>/dev/null || echo '[]')"
   jq --argjson live "${LIVE_IDS}" --arg cur "${RUN_ID}" \
     '[.[] | select((.id | tostring) as $id | ($id == $cur) or ($live | index($id) != null))]' \
     "${RUNS_JSON}" >"${RUNS_JSON}.pruned" && mv "${RUNS_JSON}.pruned" "${RUNS_JSON}"
+
+  # Synthesize live in-progress entries for any currently active workflow runs so
+  # RECONCILE_ONLY deployments and concurrent runs immediately appear as "running".
+  while IFS= read -r active_run_json; do
+    [[ -z "${active_run_json}" ]] && continue
+    active_id="$(echo "${active_run_json}" | jq -r '.id | tostring')"
+    [[ "${active_id}" == "${RUN_ID}" && "${RECONCILE_ONLY:-false}" != "true" ]] && continue
+
+    active_started="$(echo "${active_run_json}" | jq -r '.run_started_at // .created_at')"
+    active_event="$(echo "${active_run_json}" | jq -r '.event // "workflow_dispatch"')"
+    active_actor="$(echo "${active_run_json}" | jq -r '.actor.login // "maintainer"')"
+    active_url="$(echo "${active_run_json}" | jq -r '.html_url')"
+    active_sha="$(echo "${active_run_json}" | jq -r '.head_sha // ""' | cut -c1-7)"
+
+    active_mode="snapshot"
+    [[ "${active_event}" == "schedule" ]] && active_mode="release"
+    active_ver="v0.1.1-dev.${active_sha}"
+    s_build="running"
+    s_concourse="pending"
+    s_vuln="running"
+    s_release="pending"
+
+    if curl -fsSL --max-time 10 "${GH_AUTH_HEADER[@]}" "https://api.github.com/repos/${REPO}/actions/runs/${active_id}/artifacts" -o "${RUNS_JSON}.art" 2>/dev/null; then
+      meta_name="$(jq -r '.artifacts[]?.name | select(startswith("pipeline-meta-"))' "${RUNS_JSON}.art" | head -n 1 || true)"
+      if [[ "${meta_name}" == pipeline-meta-release-* ]]; then
+        active_mode="release"
+        active_ver="v${meta_name#pipeline-meta-release-}"
+        active_ver="v${active_ver#v}"
+      elif [[ "${meta_name}" == pipeline-meta-snapshot-* ]]; then
+        active_mode="snapshot"
+        active_ver="v${meta_name#pipeline-meta-snapshot-}"
+        active_ver="v${active_ver#v}"
+      fi
+      if [[ "${active_ver}" =~ -dev\.([0-9a-f]{7,})$ ]]; then
+        active_sha="${BASH_REMATCH[1]}"
+      fi
+      rm -f "${RUNS_JSON}.art"
+    fi
+
+    if curl -fsSL --max-time 10 "${GH_AUTH_HEADER[@]}" "https://api.github.com/repos/${REPO}/actions/runs/${active_id}/jobs" -o "${RUNS_JSON}.jobs" 2>/dev/null; then
+      map_gh_job() {
+        local pat="$1"
+        jq -r --arg p "${pat}" '
+          ([.jobs[]? | select(.name | contains($p))][0]) as $j
+          | if $j == null then "pending"
+            elif $j.status != "completed" then "running"
+            elif $j.conclusion == "success" then "passed"
+            elif $j.conclusion == "skipped" then "skipped"
+            else "failed" end
+        ' "${RUNS_JSON}.jobs"
+      }
+      s_build="$(map_gh_job "Build Candidate CPI")"
+      s_concourse="$(map_gh_job "Run Concourse Deployment")"
+      s_vuln="${s_build}"
+      s_release="$(map_gh_job "Release CPI Artifact")"
+      rm -f "${RUNS_JSON}.jobs"
+    fi
+
+    start_ts="$(date -d "${active_started}" +%s 2>/dev/null || echo "${END_EPOCH}")"
+    el_sec=$((END_EPOCH - start_ts))
+    ((el_sec < 0)) && el_sec=0
+    el_str="$((el_sec / 60))m $((el_sec % 60))s (live)"
+
+    active_entry="$(jq -n \
+      --arg id "${active_id}" \
+      --arg timestamp "${active_started}" \
+      --arg version "${active_ver}" \
+      --arg release_mode "${active_mode}" \
+      --arg commit "${active_sha}" \
+      --arg commit_url "${SERVER_URL}/${REPO}/commit/${active_sha}" \
+      --arg duration "${el_str}" \
+      --arg trigger "${active_event}" \
+      --arg actor "${active_actor}" \
+      --arg url "${active_url}" \
+      --arg beta_gcs_uri "gs://cfbosh-cicd/cpi_releases/bosh_gdch_cpi_release_${active_ver#v}.tgz" \
+      --arg prod_gcs_uri "N/A (snapshot mode — internal gs://cfbosh-cicd only)" \
+      --arg s_build "${s_build}" \
+      --arg s_concourse "${s_concourse}" \
+      --arg s_vuln "${s_vuln}" \
+      --arg s_release "${s_release}" \
+      '{
+        id: $id,
+        run_number: "#1",
+        timestamp: $timestamp,
+        status: "running",
+        version: $version,
+        release_mode: $release_mode,
+        skip_concourse: false,
+        sha256: "",
+        commit: $commit,
+        commit_url: $commit_url,
+        duration: $duration,
+        duration_s: null,
+        trigger: $trigger,
+        actor: $actor,
+        url: $url,
+        release_url: "",
+        concourse_log: "gs://cfbosh-cicd/cicd-deployment-logs/",
+        beta_gcs_uri: $beta_gcs_uri,
+        prod_gcs_uri: $prod_gcs_uri,
+        stages: {
+          build_candidate: $s_build,
+          concourse: $s_concourse,
+          vuln_scan: $s_vuln,
+          release: $s_release
+        }
+      }')"
+
+    jq --argjson entry "${active_entry}" \
+      '([$entry] + [.[] | select((.id | tostring) != ($entry.id | tostring))])' \
+      "${RUNS_JSON}" >"${RUNS_JSON}.tmp" && mv "${RUNS_JSON}.tmp" "${RUNS_JSON}"
+  done < <(jq -c '.workflow_runs[]? | select(.status != "completed")' "${RUNS_JSON}.gh" 2>/dev/null || true)
+
   rm -f "${RUNS_JSON}.gh"
 fi
 
@@ -223,8 +345,8 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   } >>"${GITHUB_STEP_SUMMARY}"
 fi
 
-if [[ "${PUSH_DASHBOARD_DATA:-true}" == "true" && "${GITHUB_ACTIONS:-false}" == "true" ]]; then
-  TARGET_BRANCH="${DASHBOARD_PUSH_BRANCH:-main}"
+TARGET_BRANCH="${DASHBOARD_PUSH_BRANCH:-main}"
+if [[ "${PUSH_DASHBOARD_DATA:-true}" == "true" && "${GITHUB_ACTIONS:-false}" == "true" && "${TARGET_BRANCH}" == "main" ]]; then
   echo "[INFO] Committing updated dashboard/data/runs.json to ${TARGET_BRANCH}..."
   git config user.name "github-actions[bot]"
   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -239,7 +361,10 @@ if [[ "${PUSH_DASHBOARD_DATA:-true}" == "true" && "${GITHUB_ACTIONS:-false}" == 
         break
       fi
       echo "[WARN] Push to ${TARGET_BRANCH} rejected (attempt ${attempt}/3); rebasing onto latest ${TARGET_BRANCH}..."
-      git fetch origin "${TARGET_BRANCH}" && git rebase "origin/${TARGET_BRANCH}" || { git rebase --abort || true; break; }
+      git fetch origin "${TARGET_BRANCH}" && git rebase "origin/${TARGET_BRANCH}" || {
+        git rebase --abort || true
+        break
+      }
     done
     if [[ "${pushed}" != "true" ]]; then
       echo "[WARN] Could not push dashboard update to ${TARGET_BRANCH}; the deployed Pages data still contains this run."

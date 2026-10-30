@@ -19,7 +19,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -39,20 +41,65 @@ import (
 	vmv1 "github.com/googlecloudplatform/google-distributed-cloud-apis/pkg/apis/public/virtualmachine/v1"
 )
 
+func discoverLatestStemcellVersion() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		"https://storage.googleapis.com/storage/v1/b/bosh-core-stemcells-candidate/o?prefix=gdch/bosh-stemcell-",
+		nil,
+	)
+	if err == nil {
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				var listing struct {
+					Items []struct {
+						Name string `json:"name"`
+					} `json:"items"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&listing); err == nil {
+					re := regexp.MustCompile(`^gdch/bosh-stemcell-([0-9]+\.[0-9]+)-gdch-kvm-ubuntu-noble\.tgz$`)
+					var latest string
+					var latestMaj, latestMin int
+					for _, item := range listing.Items {
+						m := re.FindStringSubmatch(item.Name)
+						if len(m) != 2 {
+							continue
+						}
+						var maj, min int
+						if _, err := fmt.Sscanf(m[1], "%d.%d", &maj, &min); err == nil {
+							if latest == "" || maj > latestMaj || (maj == latestMaj && min > latestMin) {
+								latest = m[1]
+								latestMaj = maj
+								latestMin = min
+							}
+						}
+					}
+					if latest != "" {
+						return latest
+					}
+				}
+			}
+		}
+	}
+	return "0.0.0"
+}
+
 var (
 	defaultImagePath  = "/root/path/image.file"
 	defaultName       = "gdch-stemcell"
-	defaultVersion    = "0.0.0"
+	defaultVersion    = discoverLatestStemcellVersion()
 	defaultInfra      = "gdch"
 	defaultHypervisor = "kvm"
-	randomVersion     = "1.2.3"
+	otherVersion      = defaultVersion + ".1"
 	staticUUID        = "aa937100-7c2f-11ee-b962-0242ac120002"
 	shortUUID         = strings.Split(staticUUID, "-")[0]
 	defaultStemcellID = apiv1.NewStemcellCID(
-		fmt.Sprintf("stemcell-%s-%s", defaultVersion, shortUUID),
-	)
-	randomStemcellID = apiv1.NewStemcellCID(
-		fmt.Sprintf("stemcell-%s-%s", randomVersion, shortUUID),
+		fmt.Sprintf("stemcell-%s-%s", sanitizeVersion(defaultVersion), shortUUID),
 	)
 	defaultStemcellCloudProps, _ = convertToStemcellCloudProps(
 		Property{
@@ -274,7 +321,7 @@ func TestCreateStemcell_Fail_UploadFile(t *testing.T) {
 func TestCreateStemcell_Succeed_withImageNotCreatedByCPI(t *testing.T) {
 	imageImport := createImageImport(vmconsts.ImportJobComplete)
 	imageNotCreatedByCPI := createVirtualMachineImageWithoutCPILabel(defaultStemcellID.AsString())
-	otherImport := createVirtualMachineImageImport(randomVersion, vmconsts.ImportJobComplete, "test-import-complete")
+	otherImport := createVirtualMachineImageImport(otherVersion, vmconsts.ImportJobComplete, "test-import-complete")
 	c := test.FakeClient(imageImport, imageNotCreatedByCPI, otherImport)
 	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{}, uuidGen, logger, &test.Timeout, false)
 	stemcells.ignoreConflict = true
@@ -364,13 +411,11 @@ func TestCreateStemcell_Succeed_withExistingImage(t *testing.T) {
 }
 
 func TestCreateStemcell_Succeed_withMultipleExistingImages(t *testing.T) {
-	version := "12345"
-
-	olderImageName := fmt.Sprintf("stemcell-%s-%s", version, "old-uuid") // shortUUID is "aa..."
+	olderImageName := fmt.Sprintf("stemcell-%s-%s", sanitizeVersion(defaultVersion), "old-uuid") // shortUUID is "aa..."
 	olderImage := createVirtualMachineImageWithLabel(olderImageName)
 	olderImage.CreationTimestamp = metav1.NewTime(time.Now().Add(-1 * time.Hour))
 
-	newerImageName := fmt.Sprintf("stemcell-%s-%s", version, shortUUID)
+	newerImageName := defaultStemcellID.AsString()
 	newerImage := createVirtualMachineImageWithLabel(newerImageName)
 	newerImage.CreationTimestamp = metav1.Now()
 
@@ -379,15 +424,7 @@ func TestCreateStemcell_Succeed_withMultipleExistingImages(t *testing.T) {
 	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{existingImage: newerImage}, uuidGen, logger, &test.Timeout, false)
 	stemcells.ignoreConflict = true
 
-	props := Property{
-		Name:           defaultName,
-		Version:        version,
-		Infrastructure: defaultInfra,
-		Hypervisor:     defaultHypervisor,
-	}
-	stemcellCloudProps, _ := convertToStemcellCloudProps(props)
-
-	stemcellCID, err := stemcells.CreateStemcell(defaultImagePath, stemcellCloudProps)
+	stemcellCID, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
 	if err != nil {
 		t.Fatalf("got unexpected error: %v", err)
 	}
@@ -439,7 +476,7 @@ func TestCreateStemcell_ForceRefresh_withOtherImportsInTerminalState(t *testing.
 }
 
 func TestCreateStemcell_Succeed_ForceRefresh(t *testing.T) {
-	existingImageName := fmt.Sprintf("stemcell-%s-existing", defaultVersion)
+	existingImageName := fmt.Sprintf("stemcell-%s-existing", sanitizeVersion(defaultVersion))
 	existingImage := createVirtualMachineImageWithLabel(existingImageName)
 
 	c := test.FakeClient(existingImage)
@@ -460,6 +497,24 @@ func TestCreateStemcell_Succeed_ForceRefresh(t *testing.T) {
 
 	if gotCID == existingImageName {
 		t.Fatalf("got created stemcell with CID '%s', expected it to be different from existing image '%s'", gotCID, existingImageName)
+	}
+}
+
+func TestCreateStemcell_SanitizesDotsInVersion(t *testing.T) {
+	expectedCID := defaultStemcellID.AsString()
+	c := test.FakeClient()
+	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{existingImage: createVirtualMachineImageWithLabel(expectedCID)}, uuidGen, logger, &test.Timeout, true)
+	stemcells.ignoreConflict = true
+
+	stemcellCID, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
+	if err != nil {
+		t.Fatalf("got unexpected error: %v", err)
+	}
+	if strings.Contains(stemcellCID.AsString(), ".") {
+		t.Fatalf("stemcell CID %q must not contain dots", stemcellCID.AsString())
+	}
+	if stemcellCID.AsString() != expectedCID {
+		t.Fatalf("got stemcell CID %q, want %q", stemcellCID.AsString(), expectedCID)
 	}
 }
 

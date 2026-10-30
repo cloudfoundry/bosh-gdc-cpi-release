@@ -192,13 +192,29 @@ The **`CFBOSH GDC release pipeline`** automates end-to-end BOSH CPI release pack
        | `version` | `string` (optional) | Derived from Git tags | Explicit SemVer version override (e.g., `0.1.0`; defaults to next SemVer derived from latest `vX.Y.Z` Git tag). |
        | `next_version` | `bump-patch` \| `bump-minor` \| `bump-major` \| `noop` | `bump-patch` | SemVer increment strategy applied to the latest `vX.Y.Z` Git tag to compute the target release version (defaults to `0.1.0` if no final tags exist yet). |
        | `skip_concourse` | `boolean` (`true` \| `false`) | `false` | **Snapshot mode only.** Skip Stage 3 (`Concourse`) in case of underlying infrastructure issues to validate the build/publish path; the run fails fast if combined with `release_mode=release`. |
-       | `concourse_wait_for` | `promote-candidate` \| `bosh-deployment` \| `bosh-bootstrap` \| `start-deployments` \| `none` | `promote-candidate` | Target Concourse job to monitor before proceeding to Stage 4 (`promote-candidate` waits for the full Concourse pipeline). |
+       | `concourse_wait_for` | `promote-candidate` \| `bosh-deployment` | `promote-candidate` | Target Concourse job to monitor before proceeding to Stage 4 (`promote-candidate` waits for the full Concourse pipeline). |
 - **Pipeline Stages**:
-  1. **Authorize & Resolve SemVer**: Verifies maintainer authorization and derives the target SemVer version/tag (`vX.Y.Z` in `release` mode or `vX.Y.Z-dev.<sha>` in `snapshot` mode) directly from repository Git tags via `scripts/_release_tag.py`.
+  1. **Authorize & Resolve SemVer**: Verifies maintainer authorization and derives the target SemVer version/tag (`vX.Y.Z` in `release` mode or `vX.Y.Z-dev.<sha>` in `snapshot` mode) directly from repository Git tags via `scripts/_release_tag.py` (with Stage `1b` immediately publishing a live `running` entry to the dashboard).
   2. **Build Candidate CPI & Scan Vulnerabilities**: Compiles Linux and Darwin CPI binaries (`make release-binaries`), creates the BOSH CPI release archive (`scripts/create-release`), verifies `release.MF` identity (`name: bosh-gdc-cpi` and `version`) and SHA-256 digest via `scripts/_release_artifact.py`, runs `govulncheck` against the Linux CPI binary (failing the build if any finding has a published fix — see [Vulnerability Scanning](#5-vulnerability-scanning)), and uploads candidate artifacts to `gs://cfbosh-cicd/`.
-  3. **Run Concourse Deployment Pipeline (GKE)**: Connects to the GKE Concourse cluster (`cfbosh`), renders and updates the `cfbosh-deployment` pipeline (`ci/configure.sh`), checks the `bosh-cpi-releases` GCS resource, and triggers/watches the full Concourse pipeline (`start-deployments` &rarr; `bosh-bootstrap` &rarr; `bosh-deployment` &rarr; `run-bats` / `cf-deployment` &rarr; `run-cats` &rarr; `pre-release-fan-in` &rarr; `promote-candidate`) via `ci/run-pipeline.sh`. Can be bypassed by setting `skip_concourse: true` in case of underlying infrastructure issues.
+  3. **Run Concourse Deployment Pipeline (GKE)**: Connects to the GKE Concourse cluster (`cfbosh`), renders and updates the [`cfbosh-deployment`](https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment) pipeline (`ci/configure.sh`), checks the `bosh-cpi-releases` GCS resource, and triggers/watches the Concourse pipeline (`start-deployments` &rarr; `bosh-bootstrap` &rarr; `bosh-deployment` &rarr; `run-bats` / `cf-deployment` &rarr; `run-cats` &rarr; `pre-release-fan-in` &rarr; `promote-candidate`) via `ci/run-pipeline.sh`. Can be bypassed in `snapshot` mode by setting `skip_concourse: true` in case of underlying infrastructure issues.
   4. **Release CPI Artifact (GitHub & GCS)**: In `release` mode (on `main`), publishes the verified CPI release artifacts and vulnerability report to GitHub Releases (creating the `vX.Y.Z` tag) and the external GCS bucket (`gs://gdc-external-sap/`). In `snapshot` mode (including all PR runs), skips external GitHub Release creation, git tagging, and external GCS promotion.
   5. **Update Release Pipeline Dashboard**: Appends the run telemetry and stage statuses to `dashboard/data/runs.json`, generates the GitHub Actions job summary, and deploys the updated dashboard to GitHub Pages.
+
+#### Monitoring & Debugging Concourse Pipeline Runs
+
+When Stage 3 (`3. Run Concourse Deployment Pipeline (GKE)`) is running or fails, maintainers on the Google corporate network can inspect real-time task logs, resource checks, and step outputs directly in the **Concourse Web UI**:
+
+- **Concourse Pipeline Overview**: [`https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment`](https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment)
+- **Direct Job Build URL Pattern**:
+  ```text
+  https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment/jobs/<job-name>/builds/<build-number>
+  ```
+  For example, to inspect or debug build `#88` of the `bosh-deployment` job:
+  - [`https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment/jobs/bosh-deployment/builds/88`](https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment/jobs/bosh-deployment/builds/88)
+- **Locating the Build Number & Logs**:
+  - The GitHub Actions log for Stage 3 (`Deploy & Execute Concourse Pipeline on GKE`) prints the active Concourse job and build number as it progresses (e.g., `bosh-deployment #88`) and streams the task output on failure.
+  - Each run also records its Concourse execution log in GCS (`gs://cfbosh-cicd/cicd-deployment-logs/log_<TIMESTAMP>.md`), which is linked in the expandable run details on the [Release Dashboard](https://cloudfoundry.github.io/bosh-gdc-cpi-release/).
+  - To connect via `fly` CLI or `fly intercept` into a running/failed Concourse worker container from your workstation, follow [Connect to the prod deployment pipeline in `ci/README.md`](ci/README.md#connect-to-the-prod-deployment-pipeline).
 
 ### SemVer Version Management & Release Design Approach
 
@@ -233,7 +249,7 @@ The release versioning and artifact verification architecture follows [Semantic 
 
 ### Artifacts Produced by the Release Pipeline
 
-Each run of the `CFBOSH GDC release pipeline` produces and verifies the following artifacts (focused on `bosh-gdc-cpi`; GDC stemcells are maintained in [`cloudfoundry/bosh-linux-stemcell-builder`](https://github.com/cloudfoundry/bosh-linux-stemcell-builder) and currently pulled from [`pull/778/head`](https://github.com/cloudfoundry/bosh-linux-stemcell-builder/pull/778) until merged into the default `ubuntu-noble` branch):
+Each run of the `CFBOSH GDC release pipeline` produces and verifies the following CPI release artifacts, and validates them in Concourse against the latest upstream GDC Ubuntu Noble stemcell (`bosh-stemcell-<version>-gdch-kvm-ubuntu-noble.tgz`, git tag `ubuntu-noble/v<version>`) published by [`cloudfoundry/bosh-linux-stemcell-builder`](https://github.com/cloudfoundry/bosh-linux-stemcell-builder) (`ubuntu-noble` branch, `gs://bosh-core-stemcells-candidate/gdch/`):
 
 | Artifact | Location / Destination | Description |
 | :--- | :--- | :--- |

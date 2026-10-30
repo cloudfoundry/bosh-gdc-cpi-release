@@ -560,18 +560,25 @@
       }
     }
 
+    const metaCache = new Map();
+
     async function fetchLiveRunDetails(runId) {
       try {
-        const [jobsRes, artifactsRes] = await Promise.all([
-          fetch(`https://api.github.com/repos/${GITHUB_REPO}/actions/runs/${runId}/jobs`, {
-            headers: { 'Accept': 'application/vnd.github+json' }
-          }),
-          fetch(`https://api.github.com/repos/${GITHUB_REPO}/actions/runs/${runId}/artifacts`, {
-            headers: { 'Accept': 'application/vnd.github+json' }
-          })
-        ]);
-        const jobs = jobsRes.ok ? ((await jobsRes.json()).jobs || []) : [];
-        const artifacts = artifactsRes.ok ? ((await artifactsRes.json()).artifacts || []) : [];
+        const cachedMeta = metaCache.get(runId);
+        const jobsPromise = fetch(`https://api.github.com/repos/${GITHUB_REPO}/actions/runs/${runId}/jobs`, {
+          headers: { 'Accept': 'application/vnd.github+json' }
+        });
+        const artifactsPromise = cachedMeta?.version
+          ? Promise.resolve(null)
+          : fetch(`https://api.github.com/repos/${GITHUB_REPO}/actions/runs/${runId}/artifacts`, {
+              headers: { 'Accept': 'application/vnd.github+json' }
+            });
+        const [jobsRes, artifactsRes] = await Promise.all([jobsPromise, artifactsPromise]);
+        const jobs = jobsRes && jobsRes.ok ? ((await jobsRes.json()).jobs || []) : [];
+        const artifacts = artifactsRes && artifactsRes.ok ? ((await artifactsRes.json()).artifacts || []) : (cachedMeta?.artifacts || []);
+        if (artifacts.length > 0) {
+          metaCache.set(runId, { artifacts, version: artifacts.some(a => (a.name || '').startsWith('pipeline-meta-')) });
+        }
         return { jobs, artifacts };
       } catch (e) {
         return { jobs: [], artifacts: [] };
@@ -604,7 +611,12 @@
       for (const ghRun of ghRuns) {
         const idStr = String(ghRun.id);
         const staticEntry = staticById.get(idStr);
-        if (staticEntry && ghRun.status === 'completed' && staticEntry.status !== 'running') {
+        const isRunning = ghRun.status !== 'completed';
+
+        if (!isRunning && ghRun.conclusion === 'skipped') {
+          continue;
+        }
+        if (staticEntry && !isRunning && staticEntry.status !== 'running') {
           if (!seenIds.has(idStr)) {
             merged.push({ ...staticEntry, id: idStr });
             seenIds.add(idStr);
@@ -612,7 +624,10 @@
           staticById.delete(idStr);
           continue;
         }
-        const isRunning = ghRun.status !== 'completed';
+        if (!isRunning && !staticEntry) {
+          continue;
+        }
+
         const overallStatus = isRunning ? 'running' : (ghRun.conclusion === 'success' ? 'success' : 'failure');
         const elapsedSec = Math.max(0, Math.floor((Date.now() - new Date(ghRun.run_started_at || ghRun.created_at).getTime()) / 1000));
         const shortSha = (ghRun.head_sha || '').substring(0, 7);
@@ -621,10 +636,9 @@
         let inferredMode = staticEntry?.release_mode || '';
         let liveStages = null;
 
-        // Fetch job/artifact details when the run is live OR when it is complete but missing from
-        // runs.json (e.g. data not yet committed), so mode/version come from the pipeline-meta
-        // artifact instead of being guessed from the trigger event.
-        if (isRunning || !staticEntry) {
+        // Only query per-run jobs/artifacts for actively running executions to avoid exhausting
+        // unauthenticated GitHub REST API rate limits (60 req/hr per IP).
+        if (isRunning) {
           const { jobs, artifacts } = await fetchLiveRunDetails(idStr);
           const metaArt = artifacts.find(a => (a.name || '').startsWith('pipeline-meta-'));
           if (metaArt) {
@@ -669,12 +683,12 @@
             release_mode: mode,
             skip_concourse: staticEntry?.skip_concourse || false,
             version,
-            commit: shortSha,
-            commit_url: `https://github.com/${GITHUB_REPO}/commit/${ghRun.head_sha}`,
-            duration: isRunning ? `${formatDurationSec(elapsedSec)} (live)` : formatDurationSec(elapsedSec),
-            duration_s: isRunning ? null : elapsedSec,
+            commit: staticEntry?.commit || shortSha,
+            commit_url: staticEntry?.commit_url || `https://github.com/${GITHUB_REPO}/commit/${ghRun.head_sha}`,
+            duration: isRunning ? `${formatDurationSec(elapsedSec)} (live)` : (staticEntry?.duration || formatDurationSec(elapsedSec)),
+            duration_s: isRunning ? null : (staticEntry?.duration_s ?? elapsedSec),
             trigger: ghRun.event,
-            actor: ghRun.actor?.login || 'maintainer',
+            actor: ghRun.actor?.login || staticEntry?.actor || 'maintainer',
             url: ghRun.html_url,
             release_url: mode === 'release' ? `https://github.com/${GITHUB_REPO}/releases/tag/${version}` : '',
             stages: liveStages || staticEntry?.stages || {
@@ -689,13 +703,11 @@
         staticById.delete(idStr);
       }
 
-      if (!ghReachable) {
-        for (const leftover of staticById.values()) {
-          const lid = String(leftover.id);
-          if (!seenIds.has(lid)) {
-            merged.push(leftover);
-            seenIds.add(lid);
-          }
+      for (const leftover of staticById.values()) {
+        const lid = String(leftover.id);
+        if (!seenIds.has(lid)) {
+          merged.push(leftover);
+          seenIds.add(lid);
         }
       }
 
