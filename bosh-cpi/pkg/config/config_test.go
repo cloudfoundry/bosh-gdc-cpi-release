@@ -33,7 +33,7 @@ var (
 		HotDiskAttachment:   5,
 		HotDiskDetachment:   5,
 		DiskResize:          5,
-		SnapshotCreation:    5,
+		SnapshotCreation:    10,
 		SnapshotDeletion:    5,
 		StemcellCreation:    150,
 		StemcellDeletion:    5,
