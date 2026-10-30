@@ -72,6 +72,10 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number }}
           CHECK_NAME: BOSH CPI Integration Test (GDC Staging)
           CPI_INTEG_FILTER: ${{ inputs.filter }}
+          # Presence flag only (never the value): lets the preconditions step fail fast
+          # with an actionable message when a trusted bot run has no GDC_CPI_CONFIG
+          # (Dependabot-triggered workflows only receive Dependabot secrets).
+          HAS_GDC_CPI_CONFIG: ${{ secrets.GDC_CPI_CONFIG != '' }}
         run: |
           git fetch origin main
           mkdir -p /tmp/ci-bootstrap
