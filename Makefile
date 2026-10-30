@@ -13,11 +13,15 @@ export PATH   := $(abspath $(GO_DIR)/bin):$(abspath $(TOOLS_BIN_DIR)):$(PATH)
 RELEASE_NAME  := bosh-gdc-cpi
 RELEASE_ROOT_TGZ_FIND := find $(REPO_ROOT) -maxdepth 1 \( -name 'bosh-gdc-cpi-*.tgz' -o -name 'bosh_gdc_cpi_release_*.tgz' -o -name 'bosh_gdch_cpi_release_*.tgz' \)
 
-GOLANGCI_LINT_VERSION ?= v2.4.0
+GOLANGCI_LINT_VERSION ?= v2.15.0
 
 LDFLAGS       ?= -s -w
 GOFLAGS       ?= -trimpath -buildvcs=false
 VERSION       ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+
+# Target architecture for the Linux CPI binary shipped in the BOSH release.
+# Override for arm64 stemcells: make build LINUX_ARCH=arm64
+LINUX_ARCH    ?= amd64
 
 GO_VERSION    ?= 1.26.10
 export GOTOOLCHAIN ?= local
@@ -55,19 +59,19 @@ build: ensure-go build-linux build-darwin
 
 build-linux: ensure-go
 	@mkdir -p $(BIN_DIR)
-	@echo "[INFO] Compiling CPI binary for Linux (amd64)..."
-	@CGO_ENABLED=0 GOOS=linux go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(BIN_DIR)/cpi $(REPO_ROOT)/bosh-cpi/cmd
+	@echo "[INFO] Compiling CPI binary for Linux ($(LINUX_ARCH))..."
+	@CGO_ENABLED=0 GOOS=linux GOARCH=$(LINUX_ARCH) go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(BIN_DIR)/cpi $(REPO_ROOT)/bosh-cpi/cmd
 
 build-darwin: ensure-go
 	@mkdir -p $(BIN_DIR)
-	@echo "[INFO] Compiling CPI binary for Darwin (amd64)..."
+	@echo "[INFO] Compiling CPI binary for Darwin ($$(go env GOHOSTARCH))..."
 	@CGO_ENABLED=0 GOOS=darwin go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(BIN_DIR)/cpi_darwin $(REPO_ROOT)/bosh-cpi/cmd
 
 # Prepare CPI binaries in src/bosh-gdc-cpi for BOSH packaging
 release-binaries: ensure-go
 	@mkdir -p $(SRC_DIR)
 	@echo "[INFO] Preparing CPI binaries for BOSH packaging in $(SRC_DIR)..."
-	@CGO_ENABLED=0 GOOS=linux go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(SRC_DIR)/cpi_binary_linux $(REPO_ROOT)/bosh-cpi/cmd
+	@CGO_ENABLED=0 GOOS=linux GOARCH=$(LINUX_ARCH) go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(SRC_DIR)/cpi_binary_linux $(REPO_ROOT)/bosh-cpi/cmd
 	@CGO_ENABLED=0 GOOS=darwin go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(SRC_DIR)/cpi_binary_darwin $(REPO_ROOT)/bosh-cpi/cmd
 
 # Run unit tests across all packages (Go and Python release helpers)
@@ -110,7 +114,7 @@ format: ensure-go
 	@echo "[INFO] Removing trailing whitespaces..."
 	@find $(REPO_ROOT) -type f \( -name "*.go" -o -name "*.sh" -o -name "*.md" -o -name "*.py" -o -name "*.html" -o -name "*.css" \) \
 		-not -path "*/vendor/*" -not -path "*/.git/*" -not -path "*/bin/*" -not -path "*/.tools/*" \
-		-exec sed -i 's/[[:space:]]*$$//' {} +
+		-exec perl -i -pe 's/[ \t]+$$//' {} +
 
 # Pre-check validations (format, license checks, go mod tidy)
 pre-check: ensure-go format check tidy
@@ -119,13 +123,16 @@ pre-check: ensure-go format check tidy
 check: ensure-go py-test release-hygiene
 	@echo "[INFO] Running go vet..."
 	@go vet ./bosh-cpi/...
-	@if ! command -v golangci-lint >/dev/null 2>&1; then \
+	@golangci_lint="$$(command -v golangci-lint || true)"; \
+	if [ -z "$$golangci_lint" ]; then golangci_lint="$(abspath $(TOOLS_BIN_DIR))/golangci-lint"; fi; \
+	if [ ! -x "$$golangci_lint" ]; then \
 		echo "[INFO] Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."; \
 		mkdir -p $(TOOLS_BIN_DIR); \
 		GOBIN=$(abspath $(TOOLS_BIN_DIR)) CGO_ENABLED=1 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); \
-	fi
-	@echo "[INFO] Running golangci-lint..."
-	@golangci-lint run --config=$(REPO_ROOT)/.golangci.yaml ./bosh-cpi/...
+		golangci_lint="$(abspath $(TOOLS_BIN_DIR))/golangci-lint"; \
+	fi; \
+	echo "[INFO] Running golangci-lint..."; \
+	"$$golangci_lint" run --config=$(REPO_ROOT)/.golangci.yaml ./bosh-cpi/...
 
 # Check and add license headers if addlicense is installed
 check-license:
@@ -183,12 +190,15 @@ release-hygiene:
 VULN_FAIL_ON_FIXABLE ?= true
 vuln-scan: ensure-go build-linux
 	@echo "[INFO] Running govulncheck on $(BIN_DIR)/cpi..."
-	@if ! command -v govulncheck >/dev/null 2>&1; then \
+	@govulncheck="$$(command -v govulncheck || true)"; \
+	if [ -z "$$govulncheck" ]; then govulncheck="$(abspath $(TOOLS_BIN_DIR))/govulncheck"; fi; \
+	if [ ! -x "$$govulncheck" ]; then \
 		echo "[INFO] Installing govulncheck..."; \
 		mkdir -p $(TOOLS_BIN_DIR); \
 		GOBIN=$(abspath $(TOOLS_BIN_DIR)) go install golang.org/x/vuln/cmd/govulncheck@latest; \
-	fi
-	@govulncheck -mode=binary -json $(BIN_DIR)/cpi > $(BIN_DIR)/govulncheck.json || true
+		govulncheck="$(abspath $(TOOLS_BIN_DIR))/govulncheck"; \
+	fi; \
+	"$$govulncheck" -mode=binary -json $(BIN_DIR)/cpi > $(BIN_DIR)/govulncheck.json || true
 	@python3 $(REPO_ROOT)/scripts/_vuln_report.py $(BIN_DIR)/govulncheck.json \
 		--version "$(VERSION)" --go-version "$$(go version $(BIN_DIR)/cpi | awk '{print $$2}')" \
 		--output $(BIN_DIR)/vulnerability-report.md $(if $(filter true,$(VULN_FAIL_ON_FIXABLE)),--fail-on-fixable,)

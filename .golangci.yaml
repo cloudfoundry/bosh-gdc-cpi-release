@@ -11,6 +11,11 @@ linters:
     - revive
     - whitespace
   settings:
+    govet:
+      # the `inline` analyzer (Go 1.27+) only reports "cannot inline" diagnostics,
+      # which are informational and not actionable code issues
+      disable:
+        - inline
     revive:
       rules:
         - name: duplicated-imports
