@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       release_mode:
-        description: 'Pipeline execution mode (snapshot = internal GCS validation only, release = official SemVer GitHub & GCS release; release is only honoured on main without pr_number)'
+        description: 'Pipeline execution mode (snapshot = internal GCS validation only, release = official SemVer GitHub & GCS release; release is only honoured on main)'
         required: false
         default: 'snapshot'
         type: choice
@@ -48,14 +48,6 @@ on:
           - bosh-bootstrap
           - start-deployments
           - none
-      pr_number:
-        description: 'Optional PR number to checkout and test'
-        required: false
-        type: string
-  issue_comment:
-    types: [created]
-  pull_request:
-    types: [labeled]
 
 permissions:
   contents: write
@@ -66,17 +58,14 @@ permissions:
   id-token: write
 
 concurrency:
-  group: cfbosh-gdc-release-pipeline-${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pr_number || github.ref }}
+  group: cfbosh-gdc-release-pipeline-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   prepare:
     name: 1. Authorize & Resolve SemVer
-    if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/test-release')) ||
-      (github.event_name == 'pull_request' && github.event.label.name == 'trigger-release')
+    # Only merged code reaches the shared Concourse pipeline: no pull request triggers.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.init.outputs.should_run }}
@@ -110,7 +99,6 @@ jobs:
           INPUT_NEXT_VERSION: ${{ github.event.inputs.next_version }}
           INPUT_SKIP_CONCOURSE: ${{ github.event.inputs.skip_concourse }}
           INPUT_CONCOURSE_WAIT_FOR: ${{ github.event.inputs.concourse_wait_for }}
-          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
@@ -135,62 +123,10 @@ jobs:
               echo "::error::User '${GITHUB_ACTOR}' is not authorized to trigger the release pipeline."
               exit 1
             fi
-            if [[ -n "${INPUT_PR_NUMBER}" ]]; then
-              git fetch origin "pull/${INPUT_PR_NUMBER}/head:pr-${INPUT_PR_NUMBER}"
-              TARGET_REF="$(git rev-parse "pr-${INPUT_PR_NUMBER}")"
-              TARGET_BRANCH="$(gh pr view "${INPUT_PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json headRefName --jq '.headRefName')"
-              ALLOW_BRANCH="true"
-              RELEASE_MODE="snapshot"
-              echo "[INFO] PR target specified (#${INPUT_PR_NUMBER}); forcing RELEASE_MODE=snapshot (official releases run from main only)."
-            elif [[ "${GITHUB_REF_NAME:-}" != "main" ]]; then
-              ALLOW_BRANCH="true"
-              RELEASE_MODE="snapshot"
-              echo "[INFO] Non-main branch ('${GITHUB_REF_NAME:-}'); forcing RELEASE_MODE=snapshot (official releases run from main only)."
-            fi
-          elif [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
-            PR_USER="$(jq -r '.pull_request.user.login // empty' "${GITHUB_EVENT_PATH}")"
-            PR_ASSOC="$(jq -r '.pull_request.author_association // empty' "${GITHUB_EVENT_PATH}")"
-            LABEL_NAME="$(jq -r '.label.name // empty' "${GITHUB_EVENT_PATH}")"
-            if ! is_authorized_maintainer "${GITHUB_ACTOR}" "${PR_ASSOC}"; then
-              echo "::error::User '${GITHUB_ACTOR}' is not authorized to trigger the release pipeline."
+            if [[ "${GITHUB_REF_NAME:-}" != "main" ]]; then
+              echo "::error::The release pipeline only runs merged code; run it from 'main' (got '${GITHUB_REF_NAME:-}')."
               exit 1
             fi
-            SKIP_CONCOURSE="false"
-            TARGET_REF="$(jq -r '.pull_request.head.sha' "${GITHUB_EVENT_PATH}")"
-            TARGET_BRANCH="$(jq -r '.pull_request.head.ref' "${GITHUB_EVENT_PATH}")"
-            ALLOW_BRANCH="true"
-            RELEASE_MODE="snapshot"
-            echo "[INFO] Triggered from Pull Request label '${LABEL_NAME}'; forcing RELEASE_MODE=snapshot and SKIP_CONCOURSE=false."
-          elif [[ "${GITHUB_EVENT_NAME}" == "issue_comment" ]]; then
-            COMMENT_BODY="$(jq -r '.comment.body // empty' "${GITHUB_EVENT_PATH}")"
-            COMMENT_USER="$(jq -r '.comment.user.login // empty' "${GITHUB_EVENT_PATH}")"
-            COMMENT_ASSOC="$(jq -r '.comment.author_association // empty' "${GITHUB_EVENT_PATH}")"
-            COMMENT_ID="$(jq -r '.comment.id // empty' "${GITHUB_EVENT_PATH}")"
-            PR_NUM="$(jq -r '.issue.number // empty' "${GITHUB_EVENT_PATH}")"
-
-            CMD_LINE="$(printf '%s\n' "${COMMENT_BODY}" | tr -d '\r' | grep -E '^[[:space:]]*/test-release([[:space:]]|$)' | head -n 1 || true)"
-            if [[ -z "${CMD_LINE}" ]]; then
-              echo "should_run=false" >>"${GITHUB_OUTPUT}"
-              exit 0
-            fi
-            if ! is_authorized_maintainer "${COMMENT_USER}" "${COMMENT_ASSOC}"; then
-              echo "::error::User '${COMMENT_USER}' is not authorized to trigger '/test-release'."
-              exit 1
-            fi
-            # PR comment runs are always snapshot: official releases run from main only
-            RELEASE_MODE="snapshot"
-            if [[ "${CMD_LINE}" == *"skip-concourse"* || "${CMD_LINE}" == *"--skip-concourse"* ]]; then
-              SKIP_CONCOURSE="true"
-            fi
-            if [[ "${CMD_LINE}" =~ version=([0-9]+\.[0-9]+\.[0-9A-Za-z.-]+) ]]; then
-              EXPLICIT_VERSION="${BASH_REMATCH[1]}"
-            fi
-            git fetch origin "pull/${PR_NUM}/head:pr-${PR_NUM}"
-            TARGET_REF="$(git rev-parse "pr-${PR_NUM}")"
-            TARGET_BRANCH="$(gh pr view "${PR_NUM}" --repo "${GITHUB_REPOSITORY}" --json headRefName --jq '.headRefName')"
-            ALLOW_BRANCH="true"
-            echo "[INFO] Triggered from Pull Request #${PR_NUM} comment; forcing RELEASE_MODE=snapshot."
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}/reactions" -f content='rocket' >/dev/null 2>&1 || true
           fi
 
           # Invariants, independent of the trigger path:
