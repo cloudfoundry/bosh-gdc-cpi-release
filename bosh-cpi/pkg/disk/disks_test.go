@@ -1474,6 +1474,29 @@ func TestSnapshotDiskSuccess_SnapshotNotReady(t *testing.T) {
 	}
 }
 
+func TestSnapshotDiskFailed_BackupStateFailed(t *testing.T) {
+	diskName := "disk-test"
+	disk := virtualMachineDisk(diskName)
+	c := test.FakeClient(disk)
+	f := service.NewCPIFinder(c, projectID)
+
+	testClock := clock.NewFakePassiveClock(testTimeNow)
+	backupName := fmt.Sprintf("backup-%s-%d", diskName, testClock.Now().Unix())
+	waiter := getWaiterWithServerSideActionForBackupUpdate(c, backupName, backupv1.BackupStateFailed)
+
+	disks := NewDisks(c, projectID, f, logger, uuidGen, &statefulMockAgentService{}, waiter, &mockVMService{}, &test.Timeout, false, true, false, &statefulMockMetadataClient{})
+	disks.clock = testClock
+
+	_, err := disks.SnapshotDisk(apiv1.NewDiskCID(diskName), apiv1.DiskMeta{})
+	if err == nil {
+		t.Fatal("got nil, expected error")
+	}
+	expectedErr := fmt.Sprintf("backup %s failed", backupName)
+	if !strings.Contains(err.Error(), expectedErr) {
+		t.Fatalf("expected error containing %q, got %v", expectedErr, err)
+	}
+}
+
 func TestDeleteSnapshot_Success(t *testing.T) {
 	diskName := "disk-test"
 	backupName := fmt.Sprintf("%s-backup", diskName)

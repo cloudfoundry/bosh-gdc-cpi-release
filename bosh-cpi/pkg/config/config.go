@@ -255,7 +255,7 @@ func setDefaultValues(c *Config) {
 		c.GDC.Timeout.DiskResize = 5
 	}
 	if c.GDC.Timeout.SnapshotCreation == 0 {
-		c.GDC.Timeout.SnapshotCreation = 5
+		c.GDC.Timeout.SnapshotCreation = 10
 	}
 	if c.GDC.Timeout.SnapshotDeletion == 0 {
 		c.GDC.Timeout.SnapshotDeletion = 5

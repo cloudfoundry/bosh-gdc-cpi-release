@@ -267,10 +267,10 @@ resolve_cpi_integ_filter() {
     bosh-cpi/pkg/disk/*)
       has_disk=true
       ;;
-    bosh-cpi/pkg/vm/*)
+    bosh-cpi/pkg/vm/* | bosh-cpi/pkg/service/vm/*)
       has_vm=true
       ;;
-    bosh-cpi/pkg/stemcell/*)
+    bosh-cpi/pkg/stemcell/* | bosh-cpi/pkg/service/image/* | bosh-cpi/pkg/service/storage/*)
       has_stemcell=true
       ;;
     bosh-cpi/* | go.mod | go.sum | jobs/* | packages/* | scripts/ci-integration-test.sh)
@@ -488,6 +488,24 @@ complete_pr_check_run() {
       -f "output[title]=${title}" \
       -f "output[summary]=Manual ${GITHUB_EVENT_NAME:-workflow_dispatch} run completed with ${conclusion} (${run_url})." >/dev/null 2>&1 ||
       echo "Warning: Failed to update check-run ${PR_CHECK_RUN_ID} on PR #${PR_NUMBER}."
+
+    if [[ "${conclusion}" == "success" && -n "${PR_HEAD_SHA:-}" ]]; then
+      local check_name="${CHECK_NAME:-BOSH CPI Integration Test (GDC Staging)}"
+      local existing_failed_ids
+      existing_failed_ids=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-runs" \
+        --jq ".check_runs[] | select(.name == \"${check_name}\" and .app.slug == \"github-actions\" and .conclusion == \"failure\") | .id" 2>/dev/null || true)
+      local failed_id
+      while IFS= read -r failed_id; do
+        [[ -z "${failed_id}" || "${failed_id}" == "${PR_CHECK_RUN_ID}" ]] && continue
+        echo "Updating previous failed check-run ${failed_id} on PR #${PR_NUMBER} (${PR_HEAD_SHA}) with conclusion=${conclusion}..."
+        gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${failed_id}" \
+          -f status="completed" \
+          -f conclusion="${conclusion}" \
+          -f details_url="${run_url}" \
+          -f "output[title]=${title}" \
+          -f "output[summary]=Superseded by passing ${GITHUB_EVENT_NAME:-workflow_dispatch} run (${run_url})." >/dev/null 2>&1 || true
+      done <<<"${existing_failed_ids}"
+    fi
   fi
 
   if [[ "${GITHUB_ACTIONS:-}" == "true" && -n "${CI_LOG_FILE:-}" ]]; then

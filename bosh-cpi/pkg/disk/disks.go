@@ -657,6 +657,9 @@ func (d *Disks) SnapshotDisk(cid apiv1.DiskCID, meta apiv1.DiskMeta) (apiv1.Snap
 		if !ok {
 			return false, fmt.Errorf("convert obj to VirtualMachineBackup: %v", obj)
 		}
+		if backup.Status.BackupStatus.State == backupv1.BackupStateFailed {
+			return false, fmt.Errorf("backup %s failed", backup.Name)
+		}
 		return backup.Status.BackupStatus.State == backupv1.BackupStateSucceeded, nil
 	}
 
