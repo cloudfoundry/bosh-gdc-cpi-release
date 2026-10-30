@@ -28,7 +28,6 @@
     - get: cicd-deployment-artifacts-bootstrap
       params:
         unpack: true
-    - get: noble-stemcells
     - get: bosh-cpi-releases
     - task: create-env
       image: cfbosh-image
@@ -37,7 +36,6 @@
         inputs:
         - name: cicd-deployment-logs-bootstrap
         - name: cicd-deployment-artifacts-bootstrap
-        - name: noble-stemcells
         - name: bosh-cpi-releases
         outputs:
         - name: log_dir
@@ -61,9 +59,16 @@
 
             cp -r cicd-deployment-artifacts-bootstrap/ cicd-deployment-artifacts/
 
-            noble_stemcell_tarball=$(find noble-stemcells -type f -name "bosh-stemcell-*-gdch-kvm-ubuntu-noble.tgz" -printf "%f")
-            mkdir -p cicd-deployment-artifacts/noble-stemcells/
-            echo "gs://cfbosh-cicd/stemcells/use_metadata_server/${noble_stemcell_tarball}" > cicd-deployment-artifacts/noble-stemcells/url
+            mkdir -p noble-stemcells cicd-deployment-artifacts/noble-stemcells/
+            noble_stemcell_obj=$(curl -fsSL "https://storage.googleapis.com/storage/v1/b/bosh-core-stemcells-candidate/o?prefix=gdch/bosh-stemcell-" | jq -r '.items[]?.name // empty | select(test("^gdch/bosh-stemcell-[0-9]+\\.[0-9]+-gdch-kvm-ubuntu-noble\\.tgz$"))' | sort -V | tail -n 1 || true)
+            if [ -z "${noble_stemcell_obj}" ]; then
+              echo "[ERROR] Failed to resolve latest GDC Ubuntu Noble stemcell from gs://bosh-core-stemcells-candidate/gdch/" >&2
+              exit 1
+            fi
+            noble_stemcell_tarball=$(basename "${noble_stemcell_obj}")
+            echo "[INFO] Downloading GDC Ubuntu Noble stemcell ${noble_stemcell_tarball} from gs://bosh-core-stemcells-candidate/${noble_stemcell_obj}..."
+            curl -fSL --retry 3 "https://storage.googleapis.com/bosh-core-stemcells-candidate/${noble_stemcell_obj}" -o "noble-stemcells/${noble_stemcell_tarball}"
+            echo "gs://bosh-core-stemcells-candidate/${noble_stemcell_obj}" > cicd-deployment-artifacts/noble-stemcells/url
             echo "* BOSH Noble stemcell tarball: ${noble_stemcell_tarball}" >> log_dir/${log_file}
 
             cpi_release_tarball=$(find bosh-cpi-releases -type f -name "bosh_gdch_cpi_release_*.tgz" -printf "%f")

@@ -17,7 +17,9 @@ The following prerequisites are required:
 
 # Concourse jobs of the deployment pipeline
 
-The job graph is visible in the Concourse UI: pipeline `cfbosh-deployment`, group `all`. See your Concourse operator's documentation for how to reach the Concourse web UI.
+The job graph is visible in the Concourse Web UI (accessible on the Google corporate network):
+* **Pipeline Overview (`cfbosh-deployment`, group `all`)**: [`https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment`](https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment)
+* **Direct Job Build Logs**: `https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment/jobs/<job-name>/builds/<build-number>` (e.g., [`https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment/jobs/bosh-deployment/builds/88`](https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment/jobs/bosh-deployment/builds/88))
 
 ## Concourse jobs
 
@@ -90,7 +92,7 @@ In CI/CD (Stage 3 of [`.github/workflows/release-pipeline.yaml`](../.github/work
 
 What `ci/run-pipeline.sh` handles automatically:
 1. **CLI Bootstrapping**: Verifies and installs `gcloud`, `gke-gcloud-auth-plugin`, `kubectl`, `jq`, `yq` (v4), `bosh`, and `fly` if missing on the runner.
-2. **Stemcell Builder Checkout**: Checks out [`cloudfoundry/bosh-linux-stemcell-builder`](https://github.com/cloudfoundry/bosh-linux-stemcell-builder) (currently pinned to PR [#778](https://github.com/cloudfoundry/bosh-linux-stemcell-builder/pull/778) via `STEMCELL_BUILDER_PR_REF="pull/778/head"` until merged) alongside the repository when needed.
+2. **Upstream Stemcell Verification & Checkout**: Automatically resolves the latest GDC Ubuntu Noble stemcell version (`bosh-stemcell-<version>-gdch-kvm-ubuntu-noble.tgz`) published in `gs://bosh-core-stemcells-candidate/gdch/` (unless overridden via `--stemcell-version`) and checks out [`cloudfoundry/bosh-linux-stemcell-builder`](https://github.com/cloudfoundry/bosh-linux-stemcell-builder) on branch `ubuntu-noble` at the corresponding release tag (`ubuntu-noble/v<version>`). The Concourse deployment and acceptance test jobs (`bosh-deployment`, `run-bats`, `cf-deployment`) download the stemcell tarball directly from `gs://bosh-core-stemcells-candidate/gdch/`.
 3. **GCP & GKE Authentication**: Authenticates to `cfbosh-cicd` (with optional `--rotate-key` support for service account key rotation), fetches GKE cluster credentials (`cfbosh` in `us-east1`), and renders/applies the Concourse pipeline manifest via [`ci/configure.sh`](./configure.sh).
 4. **Resilient Port-Forwarding & Job Progression Monitoring**: Unpauses the pipeline, triggers `start-deployments`, and monitors active Concourse jobs (`start-deployments` &rarr; `bosh-bootstrap` &rarr; `bosh-deployment` &rarr; `cf-deployment` / `run-bats` / `run-cats` &rarr; `pre-release-fan-in` &rarr; `promote-candidate`). If the `kubectl port-forward` tunnel drops during multi-hour `run-bats` or `run-cats` runs, `ensure_concourse_connection()` automatically re-establishes the tunnel and re-authenticates `fly`. If a job fails transiently, `ci/run-pipeline.sh` automatically retries it once before failing the stage.
 5. **Telemetry Export**: Writes structured execution metadata (`--status-file`) consumed by Stage 5 (`scripts/update-dashboard.sh`) to update the live [CI/CD Release Dashboard](https://cloudfoundry.github.io/bosh-gdc-cpi-release/).
@@ -100,6 +102,7 @@ Supported flags for `ci/run-pipeline.sh`:
 * `--fly-target <name>`: Local `fly` target alias (default: `cfbosh-ci`).
 * `--wait-job <job>`: Terminal Concourse job to watch until completion (default: `promote-candidate`; set to `none` to only configure/trigger without waiting).
 * `--cpi-version <semver>`: Candidate CPI release version being qualified.
+* `--stemcell-version <ver>`: Upstream GDC Ubuntu Noble stemcell version published by [`cloudfoundry/bosh-linux-stemcell-builder`](https://github.com/cloudfoundry/bosh-linux-stemcell-builder) in `gs://bosh-core-stemcells-candidate/gdch/` (default: auto-resolved latest version).
 * `--status-file <path>`: Output path for the JSON status summary.
 * `--rotate-key`: Rotate the GCP service account key in `gs://cfbosh-cicd/cicd_sa_keys/cfbosh-cicd-sa/cfbosh-cicd-sa-key.json` before configuring the pipeline.
 * `--dry-run`: Render manifests (`manifest.yml` and `configs.yml`) and validate without mutating the live Concourse pipeline.

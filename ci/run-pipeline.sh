@@ -31,9 +31,9 @@ STATUS_FILE="${CONCOURSE_STATUS_FILE:-/tmp/concourse-status.json}"
 
 STEMCELL_BUILDER_REPO_URL="${STEMCELL_BUILDER_REPO_URL:-https://github.com/cloudfoundry/bosh-linux-stemcell-builder.git}"
 STEMCELL_BUILDER_BRANCH="${STEMCELL_BUILDER_BRANCH:-ubuntu-noble}"
-# TODO: Clear STEMCELL_BUILDER_PR_REF (switch to default branch ubuntu-noble) once
-# https://github.com/cloudfoundry/bosh-linux-stemcell-builder/pull/778 is merged.
-STEMCELL_BUILDER_PR_REF="${STEMCELL_BUILDER_PR_REF:-pull/778/head}"
+STEMCELL_VERSION="${STEMCELL_VERSION:-}"
+STEMCELL_BUILDER_TAG="${STEMCELL_BUILDER_TAG:-}"
+STEMCELL_BUILDER_PR_REF="${STEMCELL_BUILDER_PR_REF:-}"
 
 PORT_FORWARD_PID=""
 TMP_DIR="$(mktemp -d -t ci-concourse-XXXXXX)"
@@ -58,6 +58,8 @@ Options:
                            none | start-deployments | bosh-bootstrap | bosh-deployment | promote-candidate
                            (default: promote-candidate)
   --cpi-version <version>  Candidate CPI release version in gs://cfbosh-cicd/cpi_releases/
+  --stemcell-version <ver> Upstream GDC Ubuntu Noble stemcell version in gs://bosh-core-stemcells-candidate/gdch/
+                           (default: auto-resolved latest version)
   --status-file <path>     Output JSON file for Concourse execution metadata
   --rotate-key             Rotate cfbosh-cicd-sa service account key before updating pipeline
   --dry-run                Validate and render pipeline manifest without applying or triggering
@@ -81,6 +83,11 @@ while [[ $# -gt 0 ]]; do
     ;;
   --cpi-version)
     CPI_VERSION="$2"
+    shift 2
+    ;;
+  --stemcell-version)
+    STEMCELL_VERSION="$2"
+    STEMCELL_BUILDER_TAG="ubuntu-noble/v${STEMCELL_VERSION}"
     shift 2
     ;;
   --status-file)
@@ -200,20 +207,54 @@ rotate_concourse_sa_key() {
   fi
 }
 
+resolve_latest_stemcell_version() {
+  if [[ -n "${STEMCELL_VERSION}" && "${STEMCELL_VERSION}" != "latest" ]]; then
+    return 0
+  fi
+  echo "[INFO] Resolving latest GDC Ubuntu Noble stemcell version from gs://bosh-core-stemcells-candidate/gdch/..."
+  local latest_ver=""
+  latest_ver="$(curl -fsSL "https://storage.googleapis.com/storage/v1/b/bosh-core-stemcells-candidate/o?prefix=gdch/bosh-stemcell-" 2>/dev/null |
+    jq -r '.items[]?.name // empty | capture("^gdch/bosh-stemcell-(?<v>[0-9]+\\.[0-9]+)-gdch-kvm-ubuntu-noble\\.tgz$") | .v' 2>/dev/null |
+    sort -V | tail -n 1 || true)"
+  if [[ -z "${latest_ver}" ]]; then
+    echo "[INFO] Falling back to latest ${STEMCELL_BUILDER_BRANCH}/v* git tag from ${STEMCELL_BUILDER_REPO_URL}..."
+    latest_ver="$(git ls-remote --tags --refs "${STEMCELL_BUILDER_REPO_URL}" "refs/tags/${STEMCELL_BUILDER_BRANCH}/v*" 2>/dev/null |
+      awk -v prefix="refs/tags/${STEMCELL_BUILDER_BRANCH}/v" '{sub(prefix, "", $2); print $2}' |
+      sort -V | tail -n 1 || true)"
+  fi
+  if [[ -z "${latest_ver}" ]]; then
+    echo "[ERROR] Unable to resolve latest GDC Ubuntu Noble stemcell version." >&2
+    exit 1
+  fi
+  STEMCELL_VERSION="${latest_ver}"
+  echo "[INFO] Resolved latest GDC Ubuntu Noble stemcell version: ${STEMCELL_VERSION}"
+}
+
 prepare_stemcell_builder_repo() {
+  resolve_latest_stemcell_version
+  if [[ -z "${STEMCELL_BUILDER_TAG:-}" ]]; then
+    STEMCELL_BUILDER_TAG="${STEMCELL_BUILDER_BRANCH}/v${STEMCELL_VERSION}"
+  fi
   local stemcell_dir="${TMP_DIR}/bosh-linux-stemcell-builder"
   rm -rf "${stemcell_dir}"
   echo "[INFO] Cloning stemcell builder from ${STEMCELL_BUILDER_REPO_URL} (branch: ${STEMCELL_BUILDER_BRANCH})..."
-  git clone --branch "${STEMCELL_BUILDER_BRANCH}" --single-branch "${STEMCELL_BUILDER_REPO_URL}" "${stemcell_dir}"
+  git clone --depth 1 --branch "${STEMCELL_BUILDER_BRANCH}" --single-branch "${STEMCELL_BUILDER_REPO_URL}" "${stemcell_dir}"
   git config --global --add safe.directory "${stemcell_dir}"
   if [[ -n "${STEMCELL_BUILDER_PR_REF:-}" ]]; then
-    echo "[INFO] Checking out unmerged PR ref ${STEMCELL_BUILDER_PR_REF} (https://github.com/cloudfoundry/bosh-linux-stemcell-builder/pull/778)..."
-    git -C "${stemcell_dir}" fetch origin "${STEMCELL_BUILDER_PR_REF}:pr-778"
-    git -C "${stemcell_dir}" checkout pr-778
+    echo "[INFO] Checking out PR ref ${STEMCELL_BUILDER_PR_REF}..."
+    git -C "${stemcell_dir}" fetch --depth 1 origin "${STEMCELL_BUILDER_PR_REF}:stemcell-pr"
+    git -C "${stemcell_dir}" -c advice.detachedHead=false checkout stemcell-pr
+  elif [[ -n "${STEMCELL_BUILDER_TAG:-}" ]]; then
+    echo "[INFO] Checking out stemcell release tag ${STEMCELL_BUILDER_TAG}..."
+    if git -C "${stemcell_dir}" fetch --depth 1 origin "refs/tags/${STEMCELL_BUILDER_TAG}:refs/tags/${STEMCELL_BUILDER_TAG}" 2>/dev/null; then
+      git -C "${stemcell_dir}" -c advice.detachedHead=false checkout "tags/${STEMCELL_BUILDER_TAG}"
+    else
+      echo "[WARN] Tag ${STEMCELL_BUILDER_TAG} not found in ${STEMCELL_BUILDER_REPO_URL}; using ${STEMCELL_BUILDER_BRANCH} branch HEAD."
+    fi
   fi
   local stemcell_commit
   stemcell_commit="$(git -C "${stemcell_dir}" rev-parse --short HEAD)"
-  echo "[INFO] Stemcell builder ready at commit ${stemcell_commit} (${STEMCELL_BUILDER_REPO_URL} ${STEMCELL_BUILDER_PR_REF:-${STEMCELL_BUILDER_BRANCH}})"
+  echo "[INFO] Stemcell builder ready at commit ${stemcell_commit} (${STEMCELL_BUILDER_REPO_URL} ${STEMCELL_BUILDER_PR_REF:-${STEMCELL_BUILDER_TAG:-${STEMCELL_BUILDER_BRANCH}}})"
 }
 
 trigger_and_monitor_pipeline() {
@@ -259,9 +300,23 @@ trigger_and_monitor_pipeline() {
     gcloud storage ls "gs://cfbosh-cicd/cpi_releases/bosh_gdch_cpi_release_${CPI_VERSION}.tgz"
   fi
 
-  echo "[INFO] Checking Concourse resources '${PIPELINE_NAME}/bosh-cpi-releases' and '${PIPELINE_NAME}/noble-stemcells'..."
+  if [[ -n "${STEMCELL_VERSION}" ]]; then
+    local stemcell_url="https://storage.googleapis.com/bosh-core-stemcells-candidate/gdch/bosh-stemcell-${STEMCELL_VERSION}-gdch-kvm-ubuntu-noble.tgz"
+    echo "[INFO] Verifying upstream GDC stemcell artifact in gs://bosh-core-stemcells-candidate/gdch/bosh-stemcell-${STEMCELL_VERSION}-gdch-kvm-ubuntu-noble.tgz..."
+    curl -fsSI "${stemcell_url}" >/dev/null
+  fi
+
+  echo "[INFO] Checking Concourse resource '${PIPELINE_NAME}/bosh-cpi-releases'..."
   fly -t "${FLY_TARGET}" check-resource -r "${PIPELINE_NAME}/bosh-cpi-releases"
-  fly -t "${FLY_TARGET}" check-resource -r "${PIPELINE_NAME}/noble-stemcells" || true
+
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    case "${WAIT_JOB}" in
+    none | start-deployments | bosh-bootstrap)
+      echo "[WARN] WAIT_JOB='${WAIT_JOB}' exits before 'bosh-deployment' completes and can mask deployment failures; upgrading WAIT_JOB to 'bosh-deployment'."
+      WAIT_JOB="bosh-deployment"
+      ;;
+    esac
+  fi
 
   local pre_jobs_json="[]"
   pre_jobs_json="$(fly -t "${FLY_TARGET}" jobs -p "${PIPELINE_NAME}" --json 2>/dev/null || echo '[]')"
@@ -270,6 +325,8 @@ trigger_and_monitor_pipeline() {
 
   local baseline_target_id=0
   baseline_target_id="$(echo "${pre_jobs_json}" | jq -r --arg j "${WAIT_JOB}" '(.[] | select(.name == $j) | .finished_build.id) // 0')"
+  local baseline_max_build_id=0
+  baseline_max_build_id="$(echo "${pre_jobs_json}" | jq -r '[.[] | .finished_build.id // 0] | max // 0')"
 
   local build_num=""
   if [[ -n "${active_job}" ]]; then
@@ -348,8 +405,8 @@ trigger_and_monitor_pipeline() {
         idle_polls=$((idle_polls + 1))
         if ((idle_polls >= 3)); then
           local failed_job_name failed_job_desc
-          failed_job_name="$(echo "${cur_jobs_json}" | jq -r '.[] | select(.name != "report-orphaned-vms" and (.paused | not) and (.finished_build.status == "failed" or .finished_build.status == "errored")) | .name' | head -n 1 || true)"
-          failed_job_desc="$(echo "${cur_jobs_json}" | jq -r '.[] | select(.name != "report-orphaned-vms" and (.paused | not) and (.finished_build.status == "failed" or .finished_build.status == "errored" or .finished_build.status == "aborted")) | "\(.name) #\(.finished_build.name) (\(.finished_build.status))"' | head -n 1 || true)"
+          failed_job_name="$(echo "${cur_jobs_json}" | jq -r --argjson base "${baseline_max_build_id}" '.[] | select(.name != "report-orphaned-vms" and (.paused | not) and ((.finished_build.id // 0) > $base) and (.finished_build.status == "failed" or .finished_build.status == "errored")) | .name' | head -n 1 || true)"
+          failed_job_desc="$(echo "${cur_jobs_json}" | jq -r --argjson base "${baseline_max_build_id}" '.[] | select(.name != "report-orphaned-vms" and (.paused | not) and ((.finished_build.id // 0) > $base) and (.finished_build.status == "failed" or .finished_build.status == "errored" or .finished_build.status == "aborted")) | "\(.name) #\(.finished_build.name) (\(.finished_build.status))"' | head -n 1 || true)"
           if [[ -n "${failed_job_name}" && "${retried_jobs}" != *" ${failed_job_name} "* ]]; then
             retried_jobs="${retried_jobs}${failed_job_name} "
             idle_polls=0
@@ -392,6 +449,7 @@ trigger_and_monitor_pipeline() {
     --arg wait_job "${WAIT_JOB}" \
     --arg latest_log "${latest_log}" \
     --arg cpi_version "${CPI_VERSION}" \
+    --arg stemcell_version "${STEMCELL_VERSION}" \
     --argjson jobs "${jobs_json}" \
     '{
       status: $status,
@@ -401,6 +459,7 @@ trigger_and_monitor_pipeline() {
       wait_job: $wait_job,
       latest_deployment_log: $latest_log,
       cpi_version: $cpi_version,
+      stemcell_version: $stemcell_version,
       jobs: ($jobs | map({name: .name, paused: .paused, status: (.finished_build.status // "pending"), next_status: (.next_build.status // "idle")}))
     }' >"${STATUS_FILE}"
 

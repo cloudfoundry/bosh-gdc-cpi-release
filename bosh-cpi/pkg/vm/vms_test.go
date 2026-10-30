@@ -2727,6 +2727,12 @@ func buildExpectedVM(vmName, bootDiskName, ephemeralDiskName string) vmv1.Virtua
 				Type:             "type-foo",
 				EnableSecureBoot: ptr.To(false),
 			},
+			StartupScripts: []vmv1.StartupScript{
+				{
+					Name:   metadataAgentConfigScriptName,
+					Script: metadataAgentConfigScript,
+				},
+			},
 		},
 	}
 }

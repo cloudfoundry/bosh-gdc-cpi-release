@@ -39,7 +39,7 @@ var (
 		StemcellDeletion:    5,
 		StemcellReplication: 2,
 		VMDeletion:          2,
-		VMStart:             15,
+		VMStart:             30,
 		VMStop:              5,
 	}
 )

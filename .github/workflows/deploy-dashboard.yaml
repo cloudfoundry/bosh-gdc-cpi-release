@@ -38,6 +38,7 @@ jobs:
       # so a plain push can never overwrite runs that were recorded by the pipeline.
       - name: Reconcile Dashboard Data with Live Pages Data
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RECONCILE_ONLY: "true"
           PUSH_DASHBOARD_DATA: "false"
         run: ./scripts/update-dashboard.sh
