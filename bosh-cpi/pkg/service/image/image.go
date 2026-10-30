@@ -78,6 +78,27 @@ func (c *Client) Delete(ctx context.Context, imageID string) error {
 	return nil
 }
 
+// DeleteImageImport deletes the VirtualMachineImageImport that produced the
+// image. The import shares the image's name and is not garbage-collected when
+// the VirtualMachineImage is deleted, so it must be removed explicitly.
+func (c *Client) DeleteImageImport(ctx context.Context, imageID string) error {
+	imageImport := &vmv1.VirtualMachineImageImport{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      imageID,
+			Namespace: c.ProjectID,
+		},
+	}
+
+	if err := c.Client.Delete(ctx, imageImport); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("delete VirtualMachineImageImport %q: %w", imageID, err)
+	}
+
+	return nil
+}
+
 // Wait and confirm the image import completes. If the image import fails, there will not be associated image that's ready to use for VMs.
 func (c *Client) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
 	imageImportStatusChecker := func(obj client.Object) (bool, error) {

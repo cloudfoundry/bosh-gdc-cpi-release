@@ -653,6 +653,9 @@ func (m *mockImageService) Get(context.Context, string) (*vmv1.VirtualMachineIma
 func (m *mockImageService) Delete(context.Context, string) error {
 	return nil
 }
+func (m *mockImageService) DeleteImageImport(context.Context, string) error {
+	return nil
+}
 func (m *mockImageService) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
 	return nil
 }
@@ -673,6 +676,9 @@ func (m *mockNonExistentImageService) Get(context.Context, string) (*vmv1.Virtua
 func (m *mockNonExistentImageService) Delete(context.Context, string) error {
 	return apierrors.NewNotFound(schema.GroupResource{}, "")
 }
+func (m *mockNonExistentImageService) DeleteImageImport(context.Context, string) error {
+	return apierrors.NewNotFound(schema.GroupResource{}, "")
+}
 func (m *mockNonExistentImageService) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
 	return nil
 }
@@ -691,6 +697,9 @@ func (m *mockImageServiceErrorCheckImage) Get(context.Context, string) (*vmv1.Vi
 }
 
 func (m *mockImageServiceErrorCheckImage) Delete(context.Context, string) error {
+	return nil
+}
+func (m *mockImageServiceErrorCheckImage) DeleteImageImport(context.Context, string) error {
 	return nil
 }
 func (m *mockImageServiceErrorCheckImage) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
@@ -717,6 +726,9 @@ func (m *mockImageServiceErrorDeletion) Get(context.Context, string) (*vmv1.Virt
 func (m *mockImageServiceErrorDeletion) Delete(context.Context, string) error {
 	return errors.New("failed to delete stemcell")
 }
+func (m *mockImageServiceErrorDeletion) DeleteImageImport(context.Context, string) error {
+	return nil
+}
 func (m *mockImageServiceErrorDeletion) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
 	return nil
 }
@@ -735,6 +747,9 @@ func (m *mockImageServiceErrorWaitDeletion) Get(context.Context, string) (*vmv1.
 }
 
 func (m *mockImageServiceErrorWaitDeletion) Delete(context.Context, string) error {
+	return nil
+}
+func (m *mockImageServiceErrorWaitDeletion) DeleteImageImport(context.Context, string) error {
 	return nil
 }
 func (m *mockImageServiceErrorWaitDeletion) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
@@ -850,6 +865,10 @@ func (m *mockImageServiceErrorGetImage) Get(context.Context, string) (*vmv1.Virt
 }
 
 func (m *mockImageServiceErrorGetImage) Delete(context.Context, string) error {
+	return nil
+}
+
+func (m *mockImageServiceErrorGetImage) DeleteImageImport(context.Context, string) error {
 	return nil
 }
 

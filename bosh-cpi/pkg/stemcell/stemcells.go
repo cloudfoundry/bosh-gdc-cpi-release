@@ -60,6 +60,7 @@ type storageService interface {
 type imageService interface {
 	Get(ctx context.Context, imageID string) (*vmv1.VirtualMachineImage, error)
 	Delete(ctx context.Context, imageID string) error
+	DeleteImageImport(ctx context.Context, imageID string) error
 	WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error
 	WaitUntilVMImageCreation(ctx context.Context, imageID string, timeout time.Duration) error
 	WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error
@@ -196,6 +197,10 @@ func (s *Stemcells) DeleteStemcell(cid apiv1.StemcellCID) error {
 
 	if err := s.imageService.WaitUntilImageDeleted(ctx, stemcellID, time.Duration(s.timeout.StemcellDeletion)*time.Minute); err != nil {
 		return fmt.Errorf("delete stemcell %q: %w", cid, err)
+	}
+
+	if err := s.imageService.DeleteImageImport(ctx, stemcellID); err != nil {
+		return fmt.Errorf("delete stemcell image import %q: %w", stemcellID, err)
 	}
 
 	return nil
