@@ -45,6 +45,28 @@ is_authorized_maintainer() {
   return 1
 }
 
+# is_trusted_bot_pr_author reports whether a pull_request author is a GitHub
+# bot explicitly trusted to auto-trigger the presubmit integration test.
+# Defaults to dependabot[bot]; override with a comma/space separated
+# CI_TRUSTED_BOT_AUTHORS. Only consulted for same-repository pull_request
+# events (never for /test-integration comments or release triggers), and
+# bots still cannot approve or merge, so a maintainer review remains required.
+is_trusted_bot_pr_author() {
+  local actor="$1"
+  if [[ -z "${actor}" ]]; then
+    return 1
+  fi
+  local actor_lc trusted bot
+  actor_lc=$(printf '%s' "${actor}" | tr '[:upper:]' '[:lower:]')
+  trusted="${CI_TRUSTED_BOT_AUTHORS:-dependabot[bot]}"
+  for bot in ${trusted//,/ }; do
+    if [[ "${actor_lc}" == "$(printf '%s' "${bot}" | tr '[:upper:]' '[:lower:]')" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # prepare_trusted_ci_files copies the CI runner scripts into an isolated
 # directory (/tmp/ci-trusted) outside the repository working tree before any
 # untrusted PR ref is checked out. When origin/main already contains the CI
@@ -328,7 +350,13 @@ check_ci_preconditions() {
       exit 1
     fi
 
-    if ! is_authorized_maintainer "${pr_user}" "${author_association}"; then
+    if is_trusted_bot_pr_author "${pr_user}"; then
+      echo "Pull request author '${pr_user}' is a trusted bot; running the integration test automatically."
+      if [[ -z "${GDC_CPI_CONFIG:-}" ]]; then
+        echo "::error::GDC_CPI_CONFIG is empty. Workflows triggered by ${pr_user} only receive Dependabot secrets, not Actions/environment secrets: add GDC_CPI_CONFIG under Settings > Secrets and variables > Dependabot."
+        exit 1
+      fi
+    elif ! is_authorized_maintainer "${pr_user}" "${author_association}"; then
       echo "Skipping automatic integration test for untrusted author '${pr_user}' (author_association='${author_association}')."
       echo "A maintainer must trigger this test manually by commenting '/test-integration' on the PR or via workflow_dispatch with pr_number=${pr_number}."
       exit 1
