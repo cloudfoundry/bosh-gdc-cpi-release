@@ -153,7 +153,7 @@ func TestDelete(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := ic.Delete(ctx, "vmi-id"); err != nil {
+	if err := ic.DeleteImage(ctx, "vmi-id"); err != nil {
 		t.Fatalf("got unexpected error: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestDeleteError(t *testing.T) {
 		Client:    fc,
 		ProjectID: "project",
 	}
-	if err := ic.Delete(context.Background(), "vmi-id"); err == nil {
+	if err := ic.DeleteImage(context.Background(), "vmi-id"); err == nil {
 		t.Error("got nil, expected error")
 	}
 }

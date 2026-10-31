@@ -59,11 +59,12 @@ type storageService interface {
 
 type imageService interface {
 	Get(ctx context.Context, imageID string) (*vmv1.VirtualMachineImage, error)
-	Delete(ctx context.Context, imageID string) error
+	DeleteImage(ctx context.Context, imageID string) error
 	DeleteImageImport(ctx context.Context, imageID string) error
 	WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error
 	WaitUntilVMImageCreation(ctx context.Context, imageID string, timeout time.Duration) error
 	WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error
+	WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error
 }
 
 type Stemcells struct {
@@ -186,20 +187,27 @@ func (s *Stemcells) CreateStemcell(imagePath string, stemcellCloudProps apiv1.St
 func (s *Stemcells) DeleteStemcell(cid apiv1.StemcellCID) error {
 	ctx := context.Background()
 	stemcellID := cid.AsString()
-	if err := s.imageService.Delete(ctx, stemcellID); err != nil {
+	if err := s.imageService.DeleteImage(ctx, stemcellID); err != nil {
 		if apierrors.IsNotFound(err) {
 			s.logger.Info("DeleteStemcell", "stemcell %q doesn't exist", stemcellID)
 			return nil
-		} else {
-			return fmt.Errorf("delete stemcell: %w", err)
 		}
+		return fmt.Errorf("delete stemcell: %w", err)
+	}
+
+	if err := s.imageService.DeleteImageImport(ctx, stemcellID); err != nil {
+		if apierrors.IsNotFound(err) {
+			s.logger.Info("DeleteStemcell", "stemcell image import %q doesn't exist", stemcellID)
+			return nil
+		}
+		return fmt.Errorf("delete stemcell image import: %w", err)
 	}
 
 	if err := s.imageService.WaitUntilImageDeleted(ctx, stemcellID, time.Duration(s.timeout.StemcellDeletion)*time.Minute); err != nil {
 		return fmt.Errorf("delete stemcell %q: %w", cid, err)
 	}
 
-	if err := s.imageService.DeleteImageImport(ctx, stemcellID); err != nil {
+	if err := s.imageService.WaitUntilImageImportDeleted(ctx, stemcellID, time.Duration(s.timeout.StemcellDeletion)*time.Minute); err != nil {
 		return fmt.Errorf("delete stemcell image import %q: %w", stemcellID, err)
 	}
 

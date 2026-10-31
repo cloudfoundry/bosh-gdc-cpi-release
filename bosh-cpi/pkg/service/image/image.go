@@ -63,7 +63,7 @@ func (c *Client) Has(ctx context.Context, imageID string) (bool, error) {
 	return true, nil
 }
 
-func (c *Client) Delete(ctx context.Context, imageID string) error {
+func (c *Client) DeleteImage(ctx context.Context, imageID string) error {
 	vmi := &vmv1.VirtualMachineImage{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      imageID,
@@ -146,6 +146,14 @@ func (c *Client) WaitUntilVMImageCreation(ctx context.Context, imageID string, t
 func (c *Client) WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
 	if err := c.Waiter.UntilDeleted(ctx, imageID, &vmv1.VirtualMachineImage{}, timeout); err != nil {
 		return fmt.Errorf("wait until image %q is deleted: %w", imageID, err)
+	}
+
+	return nil
+}
+
+func (c *Client) WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
+	if err := c.Waiter.UntilDeleted(ctx, imageID, &vmv1.VirtualMachineImageImport{}, timeout); err != nil {
+		return fmt.Errorf("wait until image import %q is deleted: %w", imageID, err)
 	}
 
 	return nil
