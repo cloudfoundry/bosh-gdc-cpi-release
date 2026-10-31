@@ -57,7 +57,7 @@ const (
 	BoshErrCloudErr     BoshErrType = "Bosh::Clouds::CloudError"
 	BoshErrNotSupported BoshErrType = "Bosh::Clouds::NotSupported"
 	// Add more BoshErrTypes when needed. Please refer to:
-	// https://github.com/cloudfoundry/bosh-cpi-ruby/blob/master/lib/cloud/errors.rb
+	// https://github.com/cloudfoundry/bosh-cpi-ruby/blob/main/lib/cloud/errors.rb
 )
 
 func (e Err) Error() string {
