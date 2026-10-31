@@ -63,7 +63,7 @@ func (c *Client) Has(ctx context.Context, imageID string) (bool, error) {
 	return true, nil
 }
 
-func (c *Client) Delete(ctx context.Context, imageID string) error {
+func (c *Client) DeleteImage(ctx context.Context, imageID string) error {
 	vmi := &vmv1.VirtualMachineImage{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      imageID,
@@ -73,6 +73,27 @@ func (c *Client) Delete(ctx context.Context, imageID string) error {
 
 	if err := c.Client.Delete(ctx, vmi); err != nil {
 		return fmt.Errorf("delete VirtualMachineImage %q: %w", imageID, err)
+	}
+
+	return nil
+}
+
+// DeleteImageImport deletes the VirtualMachineImageImport that produced the
+// image. The import shares the image's name and is not garbage-collected when
+// the VirtualMachineImage is deleted, so it must be removed explicitly.
+func (c *Client) DeleteImageImport(ctx context.Context, imageID string) error {
+	imageImport := &vmv1.VirtualMachineImageImport{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      imageID,
+			Namespace: c.ProjectID,
+		},
+	}
+
+	if err := c.Client.Delete(ctx, imageImport); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("delete VirtualMachineImageImport %q: %w", imageID, err)
 	}
 
 	return nil
@@ -125,6 +146,14 @@ func (c *Client) WaitUntilVMImageCreation(ctx context.Context, imageID string, t
 func (c *Client) WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
 	if err := c.Waiter.UntilDeleted(ctx, imageID, &vmv1.VirtualMachineImage{}, timeout); err != nil {
 		return fmt.Errorf("wait until image %q is deleted: %w", imageID, err)
+	}
+
+	return nil
+}
+
+func (c *Client) WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
+	if err := c.Waiter.UntilDeleted(ctx, imageID, &vmv1.VirtualMachineImageImport{}, timeout); err != nil {
+		return fmt.Errorf("wait until image import %q is deleted: %w", imageID, err)
 	}
 
 	return nil

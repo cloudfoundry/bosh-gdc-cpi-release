@@ -650,7 +650,10 @@ func (m *mockImageService) Get(context.Context, string) (*vmv1.VirtualMachineIma
 	return createVirtualMachineImageWithLabel(defaultStemcellID.AsString()), nil
 }
 
-func (m *mockImageService) Delete(context.Context, string) error {
+func (m *mockImageService) DeleteImage(context.Context, string) error {
+	return nil
+}
+func (m *mockImageService) DeleteImageImport(context.Context, string) error {
 	return nil
 }
 func (m *mockImageService) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
@@ -662,6 +665,9 @@ func (m *mockImageService) WaitUntilVMImageCreation(ctx context.Context, imageID
 func (m *mockImageService) WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
 	return nil
 }
+func (m *mockImageService) WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
+	return nil
+}
 
 // A mock implementation of image service that always throw NotFound error on deletion
 type mockNonExistentImageService struct{}
@@ -670,7 +676,10 @@ func (m *mockNonExistentImageService) Get(context.Context, string) (*vmv1.Virtua
 	return nil, apierrors.NewNotFound(schema.GroupResource{Group: "virtualmachine.gdc.goog", Resource: "virtualmachineimages"}, "")
 }
 
-func (m *mockNonExistentImageService) Delete(context.Context, string) error {
+func (m *mockNonExistentImageService) DeleteImage(context.Context, string) error {
+	return apierrors.NewNotFound(schema.GroupResource{}, "")
+}
+func (m *mockNonExistentImageService) DeleteImageImport(context.Context, string) error {
 	return apierrors.NewNotFound(schema.GroupResource{}, "")
 }
 func (m *mockNonExistentImageService) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
@@ -682,6 +691,9 @@ func (m *mockNonExistentImageService) WaitUntilVMImageCreation(ctx context.Conte
 func (m *mockNonExistentImageService) WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
 	return nil
 }
+func (m *mockNonExistentImageService) WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
+	return nil
+}
 
 // A mock implementation of image service that always errors on CheckImageImportReadiness
 type mockImageServiceErrorCheckImage struct{}
@@ -690,7 +702,10 @@ func (m *mockImageServiceErrorCheckImage) Get(context.Context, string) (*vmv1.Vi
 	return defaultVMImage, nil
 }
 
-func (m *mockImageServiceErrorCheckImage) Delete(context.Context, string) error {
+func (m *mockImageServiceErrorCheckImage) DeleteImage(context.Context, string) error {
+	return nil
+}
+func (m *mockImageServiceErrorCheckImage) DeleteImageImport(context.Context, string) error {
 	return nil
 }
 func (m *mockImageServiceErrorCheckImage) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
@@ -700,6 +715,9 @@ func (m *mockImageServiceErrorCheckImage) WaitUntilVMImageCreation(ctx context.C
 	return errors.New("cannot find the vmimage")
 }
 func (m *mockImageServiceErrorCheckImage) WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
+	return nil
+}
+func (m *mockImageServiceErrorCheckImage) WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
 	return nil
 }
 
@@ -714,8 +732,11 @@ func (m *mockImageServiceErrorDeletion) Get(context.Context, string) (*vmv1.Virt
 	return m.image, nil
 }
 
-func (m *mockImageServiceErrorDeletion) Delete(context.Context, string) error {
+func (m *mockImageServiceErrorDeletion) DeleteImage(context.Context, string) error {
 	return errors.New("failed to delete stemcell")
+}
+func (m *mockImageServiceErrorDeletion) DeleteImageImport(context.Context, string) error {
+	return nil
 }
 func (m *mockImageServiceErrorDeletion) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
 	return nil
@@ -726,6 +747,9 @@ func (m *mockImageServiceErrorDeletion) WaitUntilVMImageCreation(ctx context.Con
 func (m *mockImageServiceErrorDeletion) WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
 	return nil
 }
+func (m *mockImageServiceErrorDeletion) WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
+	return nil
+}
 
 // A mock implementation of image service that always errors out on waiting for deletion to complete
 type mockImageServiceErrorWaitDeletion struct{}
@@ -734,7 +758,10 @@ func (m *mockImageServiceErrorWaitDeletion) Get(context.Context, string) (*vmv1.
 	return defaultVMImage, nil
 }
 
-func (m *mockImageServiceErrorWaitDeletion) Delete(context.Context, string) error {
+func (m *mockImageServiceErrorWaitDeletion) DeleteImage(context.Context, string) error {
+	return nil
+}
+func (m *mockImageServiceErrorWaitDeletion) DeleteImageImport(context.Context, string) error {
 	return nil
 }
 func (m *mockImageServiceErrorWaitDeletion) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
@@ -745,6 +772,9 @@ func (m *mockImageServiceErrorWaitDeletion) WaitUntilVMImageCreation(ctx context
 }
 func (m *mockImageServiceErrorWaitDeletion) WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
 	return errors.New("timeout on waiting deletion")
+}
+func (m *mockImageServiceErrorWaitDeletion) WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
+	return nil
 }
 
 // Test helper
@@ -849,7 +879,11 @@ func (m *mockImageServiceErrorGetImage) Get(context.Context, string) (*vmv1.Virt
 	return nil, errors.New("error")
 }
 
-func (m *mockImageServiceErrorGetImage) Delete(context.Context, string) error {
+func (m *mockImageServiceErrorGetImage) DeleteImage(context.Context, string) error {
+	return nil
+}
+
+func (m *mockImageServiceErrorGetImage) DeleteImageImport(context.Context, string) error {
 	return nil
 }
 
@@ -862,5 +896,8 @@ func (m *mockImageServiceErrorGetImage) WaitUntilVMImageCreation(ctx context.Con
 }
 
 func (m *mockImageServiceErrorGetImage) WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
+	return nil
+}
+func (m *mockImageServiceErrorGetImage) WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
 	return nil
 }
