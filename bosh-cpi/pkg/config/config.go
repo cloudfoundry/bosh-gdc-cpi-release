@@ -275,7 +275,7 @@ func setDefaultValues(c *Config) {
 		c.GDC.Timeout.VMDeletion = 2
 	}
 	if c.GDC.Timeout.VMStart == 0 {
-		c.GDC.Timeout.VMStart = 15
+		c.GDC.Timeout.VMStart = 30
 	}
 	if c.GDC.Timeout.VMStop == 0 {
 		c.GDC.Timeout.VMStop = 5

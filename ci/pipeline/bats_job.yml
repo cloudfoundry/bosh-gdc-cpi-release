@@ -30,7 +30,6 @@
     - get: cicd-deployment-artifacts-bosh
       params:
         unpack: true
-    - get: noble-stemcells
     # BATs replaces the Director's cloud config with its own z1-only config. Without a
     # restore, later cf-deployment runs fail with "AZ 'z2' not found in cloud config".
     # Snapshot it in its own task so the restore in `ensure` has it even if BATs errors.
@@ -82,7 +81,6 @@
         inputs:
         - name: cicd-deployment-logs-bosh
         - name: cicd-deployment-artifacts-bosh
-        - name: noble-stemcells
         outputs:
         - name: log_dir
         params:
@@ -108,7 +106,21 @@
             run_id=$(date +%s)
             echo "[INFO] Start running BOSH acceptance tests (BATS) with run ID ${run_id}"
 
-            noble_stemcell_tarball=$(find noble-stemcells -type f -name "bosh-stemcell-*-gdch-kvm-ubuntu-noble.tgz" -printf "%f")
+            mkdir -p noble-stemcells
+            noble_stemcell_obj=""
+            if [ -s cicd-deployment-artifacts/noble-stemcells/url ]; then
+              noble_stemcell_obj=$(sed -E 's|^gs://bosh-core-stemcells-candidate/||; s|^https://storage.googleapis.com/bosh-core-stemcells-candidate/||' cicd-deployment-artifacts/noble-stemcells/url | tr -d '[:space:]')
+            fi
+            if [ -z "${noble_stemcell_obj}" ]; then
+              noble_stemcell_obj=$(curl -fsSL "https://storage.googleapis.com/storage/v1/b/bosh-core-stemcells-candidate/o?prefix=gdch/bosh-stemcell-" | jq -r '.items[]?.name // empty | select(test("^gdch/bosh-stemcell-[0-9]+\\.[0-9]+-gdch-kvm-ubuntu-noble\\.tgz$"))' | sort -V | tail -n 1 || true)
+            fi
+            if [ -z "${noble_stemcell_obj}" ]; then
+              echo "[ERROR] Failed to resolve latest GDC Ubuntu Noble stemcell from gs://bosh-core-stemcells-candidate/gdch/" >&2
+              exit 1
+            fi
+            noble_stemcell_tarball=$(basename "${noble_stemcell_obj}")
+            echo "[INFO] Downloading GDC Ubuntu Noble stemcell ${noble_stemcell_tarball} from gs://bosh-core-stemcells-candidate/${noble_stemcell_obj}..."
+            curl -fSL --retry 3 "https://storage.googleapis.com/bosh-core-stemcells-candidate/${noble_stemcell_obj}" -o "noble-stemcells/${noble_stemcell_tarball}"
             echo "* BATS Noble stemcell tarball: ${noble_stemcell_tarball}" >> log_dir/${log_file}
 
             echo "[INFO] Authenticating Concourse container as CI Service Account to access the CI GCS bucket"
