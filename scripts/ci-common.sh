@@ -352,7 +352,9 @@ check_ci_preconditions() {
 
     if is_trusted_bot_pr_author "${pr_user}"; then
       echo "Pull request author '${pr_user}' is a trusted bot; running the integration test automatically."
-      if [[ -z "${GDC_CPI_CONFIG:-}" ]]; then
+      # The secret value itself is only injected into the test step; the
+      # preconditions step receives HAS_GDC_CPI_CONFIG (true/false) instead.
+      if [[ "${HAS_GDC_CPI_CONFIG:-}" == "false" || ( -z "${HAS_GDC_CPI_CONFIG:-}" && -z "${GDC_CPI_CONFIG:-}" ) ]]; then
         echo "::error::GDC_CPI_CONFIG is empty. Workflows triggered by ${pr_user} only receive Dependabot secrets, not Actions/environment secrets: add GDC_CPI_CONFIG under Settings > Secrets and variables > Dependabot."
         exit 1
       fi
