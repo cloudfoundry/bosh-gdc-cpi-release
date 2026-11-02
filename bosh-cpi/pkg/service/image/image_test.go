@@ -27,6 +27,7 @@ import (
 	boshlog "github.com/cloudfoundry/bosh-utils/logger"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -152,7 +153,7 @@ func TestDelete(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := ic.Delete(ctx, "vmi-id"); err != nil {
+	if err := ic.DeleteImage(ctx, "vmi-id"); err != nil {
 		t.Fatalf("got unexpected error: %v", err)
 	}
 
@@ -171,7 +172,7 @@ func TestDeleteError(t *testing.T) {
 		Client:    fc,
 		ProjectID: "project",
 	}
-	if err := ic.Delete(context.Background(), "vmi-id"); err == nil {
+	if err := ic.DeleteImage(context.Background(), "vmi-id"); err == nil {
 		t.Error("got nil, expected error")
 	}
 }
@@ -182,6 +183,53 @@ func vmi(name, namespace string) *vmv1.VirtualMachineImage {
 			Name:      name,
 			Namespace: namespace,
 		},
+	}
+}
+
+func TestDeleteImageImport(t *testing.T) {
+	ii := &vmv1.VirtualMachineImageImport{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "vmi-id",
+			Namespace: "project",
+		},
+	}
+	c := test.FakeClient(ii)
+	ic := image.Client{
+		Client:    c,
+		ProjectID: "project",
+	}
+
+	ctx := context.Background()
+	if err := ic.DeleteImageImport(ctx, "vmi-id"); err != nil {
+		t.Fatalf("got unexpected error: %v", err)
+	}
+
+	got := &vmv1.VirtualMachineImageImport{}
+	err := c.Get(ctx, client.ObjectKey{Name: "vmi-id", Namespace: "project"}, got)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("import still exists, expected deleted (err=%v)", err)
+	}
+}
+
+func TestDeleteImageImportNotFound(t *testing.T) {
+	c := test.FakeClient()
+	ic := image.Client{
+		Client:    c,
+		ProjectID: "project",
+	}
+	if err := ic.DeleteImageImport(context.Background(), "missing"); err != nil {
+		t.Errorf("got %v, expected nil for a non-existent import", err)
+	}
+}
+
+func TestDeleteImageImportError(t *testing.T) {
+	fc := test.FakeInvalidClient()
+	ic := image.Client{
+		Client:    fc,
+		ProjectID: "project",
+	}
+	if err := ic.DeleteImageImport(context.Background(), "vmi-id"); err == nil {
+		t.Error("got nil, expected error")
 	}
 }
 
