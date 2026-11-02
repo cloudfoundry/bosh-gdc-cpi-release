@@ -53,6 +53,13 @@ var (
 	stemcellNameRegex = regexp.MustCompile(`^stemcell-([a-zA-Z0-9.-]+)-[a-zA-Z0-9-]+$`)
 )
 
+// sanitizeVersion replaces dots with hyphens in a stemcell version string so
+// the resulting VirtualMachineImageImport / VirtualMachineImage resource name
+// satisfies the GDC admission webhook constraint ("must not contain dots").
+func sanitizeVersion(version string) string {
+	return strings.ReplaceAll(version, ".", "-")
+}
+
 type storageService interface {
 	UploadFromLocalPath(opts *storage.UploadOptions) error
 }
@@ -161,7 +168,7 @@ func (s *Stemcells) CreateStemcell(imagePath string, stemcellCloudProps apiv1.St
 	// so it's safe to truncate the first 8 chars of UUID
 	stemcellUUID := strings.Split(original_uuid, "-")[0]
 	stemcellCID := apiv1.NewStemcellCID(
-		fmt.Sprintf("stemcell-%s-%s", props.Version, stemcellUUID),
+		fmt.Sprintf("stemcell-%s-%s", sanitizeVersion(props.Version), stemcellUUID),
 	)
 
 	// Step 1: Upload Image to GCS Bucket, where in the storage class makes sure the idempotency is maintainted at this step
@@ -321,12 +328,13 @@ func (s *Stemcells) findExistingImage(ctx context.Context, version string) (*vmv
 		return imageList.Items[i].CreationTimestamp.Time.After(imageList.Items[j].CreationTimestamp.Time)
 	})
 
+	sanitizedVer := sanitizeVersion(version)
 	for _, image := range imageList.Items {
 		matches := stemcellNameRegex.FindStringSubmatch(image.Name)
 		if len(matches) != 2 {
 			continue
 		}
-		if matches[1] == version {
+		if matches[1] == version || matches[1] == sanitizedVer {
 			return &image, nil
 		}
 	}

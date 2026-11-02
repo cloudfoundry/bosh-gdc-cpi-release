@@ -28,7 +28,6 @@
     - get: cicd-deployment-artifacts-bootstrap
       params:
         unpack: true
-    - get: noble-stemcells
     - get: bosh-cpi-releases
     - task: create-env
       image: cfbosh-image
@@ -37,12 +36,12 @@
         inputs:
         - name: cicd-deployment-logs-bootstrap
         - name: cicd-deployment-artifacts-bootstrap
-        - name: noble-stemcells
         - name: bosh-cpi-releases
         outputs:
         - name: log_dir
         params:
           GCS_SERVICE_ACCOUNT_KEY: ((credentials.cfbosh-cicd-sa_key))
+          STEMCELL_SCRIPT: ((stemcell.script))
         run:
           path: bash
           args:
@@ -61,9 +60,8 @@
 
             cp -r cicd-deployment-artifacts-bootstrap/ cicd-deployment-artifacts/
 
-            noble_stemcell_tarball=$(find noble-stemcells -type f -name "bosh-stemcell-*-gdch-kvm-ubuntu-noble.tgz" -printf "%f")
-            mkdir -p cicd-deployment-artifacts/noble-stemcells/
-            echo "gs://cfbosh-cicd/stemcells/use_metadata_server/${noble_stemcell_tarball}" > cicd-deployment-artifacts/noble-stemcells/url
+            eval "$STEMCELL_SCRIPT"
+            download_noble_stemcell noble-stemcells cicd-deployment-artifacts/noble-stemcells/url
             echo "* BOSH Noble stemcell tarball: ${noble_stemcell_tarball}" >> log_dir/${log_file}
 
             cpi_release_tarball=$(find bosh-cpi-releases -type f -name "bosh_gdch_cpi_release_*.tgz" -printf "%f")

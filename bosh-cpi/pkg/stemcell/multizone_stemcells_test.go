@@ -15,7 +15,6 @@
 package stemcell
 
 import (
-	"errors"
 	"fmt"
 	"testing"
 
@@ -84,9 +83,10 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 					false,
 				),
 			},
-			wantError: errors.New(
-				"Create stemcell in leader zone \"zone1\": " +
-					"import stemcell image: import stemcell image as stemcell-0.0.0-aa937100: cannot import image"),
+			wantError: fmt.Errorf(
+				"Create stemcell in leader zone \"zone1\": "+
+					"import stemcell image: import stemcell image as %s: cannot import image",
+				defaultStemcellID.AsString()),
 		},
 		"error waiting for image replication": {
 			leaderZone: "zone1",
@@ -110,8 +110,9 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 					false,
 				),
 			},
-			wantError: errors.New(
-				"Replication of image \"stemcell-0.0.0-aa937100\" in zone \"zone2\": cannot find the vmimage"),
+			wantError: fmt.Errorf(
+				"Replication of image %q in zone \"zone2\": cannot find the vmimage",
+				defaultStemcellID.AsString()),
 		},
 		"success": {
 			leaderZone: "zone1",
@@ -204,8 +205,9 @@ func TestDeleteMultizoneStemcells(t *testing.T) {
 					false,
 				),
 			},
-			wantError: errors.New("Delete stemcell \"stemcell-0.0.0-aa937100\" in zone \"zone2\": " +
-				"delete stemcell: failed to delete stemcell"),
+			wantError: fmt.Errorf("Delete stemcell %q in zone \"zone2\": "+
+				"delete stemcell: failed to delete stemcell",
+				defaultStemcellID.AsString()),
 		},
 		"success": {
 			leaderZone: "zone1",

@@ -49,6 +49,47 @@ type vmCreationInput struct {
 	ip                string
 }
 
+const (
+	metadataAgentConfigScriptName = "configure-bosh-agent-metadata"
+	metadataAgentConfigScript     = `#!/bin/bash
+if [ -f /var/vcap/bosh/agent.json ] && ! grep -q '"InstanceMetadata"' /var/vcap/bosh/agent.json; then
+  cat <<'EOF' > /var/vcap/bosh/agent.json
+{
+  "Platform": {
+    "Linux": {
+      "CreatePartitionIfNoEphemeralDisk": true,
+      "PartitionerType": "parted",
+      "DevicePathResolutionType": "virtio",
+      "VirtioDevicePrefix": "gdch",
+      "ServiceManager": "systemd"
+    }
+  },
+  "Infrastructure": {
+    "Settings": {
+      "Sources": [
+        {
+          "Type": "InstanceMetadata",
+          "URI": "http://169.254.169.254",
+          "SettingsPath": "/computeMetadata/v1/instance/attributes/bosh-settings",
+          "Headers": {
+            "Metadata-Flavor": "Google"
+          }
+        }
+      ],
+      "UseServerName": true,
+      "UseRegistry": false
+    }
+  }
+}
+EOF
+  mkdir -p /etc/systemd/system/bosh-agent.service.d
+  printf "[Unit]\nStartLimitBurst=60\n[Service]\nRestartSec=10\n" > /etc/systemd/system/bosh-agent.service.d/override.conf
+  systemctl daemon-reload || true
+  systemctl restart bosh-agent || true
+fi
+`
+)
+
 func (v *VMs) setVMMetadata(ctx context.Context, vm *vmv1.VirtualMachine, metadata apiv1.VMMeta) error {
 	jsonData, err := metadata.MarshalJSON()
 	if err != nil {
@@ -384,6 +425,15 @@ func (v *VMs) createVM(ctx context.Context, input vmCreationInput) error {
 		vm.Spec.Firmware = &vmv1.Firmware{
 			Type:             input.prop.Firmware.Type,
 			EnableSecureBoot: &input.prop.Firmware.EnableSecureBoot,
+		}
+	}
+
+	if v.useMetadataServer {
+		vm.Spec.StartupScripts = []vmv1.StartupScript{
+			{
+				Name:   metadataAgentConfigScriptName,
+				Script: metadataAgentConfigScript,
+			},
 		}
 	}
 

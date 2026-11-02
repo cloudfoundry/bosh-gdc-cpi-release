@@ -30,7 +30,6 @@
     - get: cicd-deployment-artifacts-bosh
       params:
         unpack: true
-    - get: noble-stemcells
     # BATs replaces the Director's cloud config with its own z1-only config. Without a
     # restore, later cf-deployment runs fail with "AZ 'z2' not found in cloud config".
     # Snapshot it in its own task so the restore in `ensure` has it even if BATs errors.
@@ -82,11 +81,11 @@
         inputs:
         - name: cicd-deployment-logs-bosh
         - name: cicd-deployment-artifacts-bosh
-        - name: noble-stemcells
         outputs:
         - name: log_dir
         params:
           GCS_SERVICE_ACCOUNT_KEY: ((credentials.cfbosh-cicd-sa_key))
+          STEMCELL_SCRIPT: ((stemcell.script))
         run:
           path: bash
           args:
@@ -108,7 +107,8 @@
             run_id=$(date +%s)
             echo "[INFO] Start running BOSH acceptance tests (BATS) with run ID ${run_id}"
 
-            noble_stemcell_tarball=$(find noble-stemcells -type f -name "bosh-stemcell-*-gdch-kvm-ubuntu-noble.tgz" -printf "%f")
+            eval "$STEMCELL_SCRIPT"
+            download_noble_stemcell noble-stemcells cicd-deployment-artifacts/noble-stemcells/url
             echo "* BATS Noble stemcell tarball: ${noble_stemcell_tarball}" >> log_dir/${log_file}
 
             echo "[INFO] Authenticating Concourse container as CI Service Account to access the CI GCS bucket"

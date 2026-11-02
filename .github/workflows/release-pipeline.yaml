@@ -45,9 +45,6 @@ on:
         options:
           - promote-candidate
           - bosh-deployment
-          - bosh-bootstrap
-          - start-deployments
-          - none
 
 permissions:
   contents: write
@@ -183,6 +180,55 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  publish_running_dashboard:
+    name: 1b. Publish Running Status to Dashboard
+    needs: [prepare]
+    if: >-
+      needs.prepare.outputs.should_run == 'true' &&
+      needs.prepare.outputs.has_new_commits == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - name: Checkout Target Revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.prepare.outputs.target_ref }}
+          fetch-depth: 0
+
+      - name: Record Running Status in Dashboard Data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PIPELINE_OVERALL_STATUS: running
+          PIPELINE_START_EPOCH: ${{ needs.prepare.outputs.start_epoch }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_MODE: ${{ needs.prepare.outputs.release_mode }}
+          SKIP_CONCOURSE: ${{ needs.prepare.outputs.skip_concourse }}
+          HAS_NEW_COMMITS: ${{ needs.prepare.outputs.has_new_commits }}
+          LATEST_TAG: ${{ needs.prepare.outputs.latest_tag }}
+          PUSH_DASHBOARD_DATA: "false"
+        run: ./scripts/update-dashboard.sh
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+
+      - name: Upload Dashboard Artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          name: github-pages-running-${{ github.run_attempt }}
+          path: './dashboard'
+
+      - name: Deploy Dashboard to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+        with:
+          artifact_name: github-pages-running-${{ github.run_attempt }}
+
   build_candidate:
     name: 2. Build Candidate CPI & Scan Vulnerabilities
     needs: [prepare]
@@ -260,8 +306,6 @@ jobs:
           GDC_CONSOLE_URL: ${{ secrets.GDC_CONSOLE_URL }}
           STEMCELL_BUILDER_REPO_URL: "https://github.com/cloudfoundry/bosh-linux-stemcell-builder.git"
           STEMCELL_BUILDER_BRANCH: "ubuntu-noble"
-          # TODO: Clear STEMCELL_BUILDER_PR_REF once https://github.com/cloudfoundry/bosh-linux-stemcell-builder/pull/778 is merged into ubuntu-noble
-          STEMCELL_BUILDER_PR_REF: "pull/778/head"
         run: |
           set -euo pipefail
           source ./scripts/ci-common.sh
@@ -365,6 +409,7 @@ jobs:
 
       - name: Update Dashboard Data & Step Summary
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PIPELINE_START_EPOCH: ${{ needs.prepare.outputs.start_epoch }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           RELEASE_MODE: ${{ needs.prepare.outputs.release_mode }}
@@ -389,8 +434,11 @@ jobs:
       - name: Upload Dashboard Artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
+          name: github-pages-final-${{ github.run_attempt }}
           path: './dashboard'
 
       - name: Deploy Dashboard to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+        with:
+          artifact_name: github-pages-final-${{ github.run_attempt }}

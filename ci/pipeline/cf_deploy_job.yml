@@ -31,7 +31,6 @@
     - get: cf-deployment-assets
       params:
         unpack: true
-    - get: noble-stemcells
     - task: deploy-cf
       image: cfbosh-image
       config:
@@ -40,11 +39,11 @@
         - name: cicd-deployment-logs-bosh
         - name: cicd-deployment-artifacts-bosh
         - name: cf-deployment-assets
-        - name: noble-stemcells
         outputs:
         - name: log_dir
         params:
           GCS_SERVICE_ACCOUNT_KEY: ((credentials.cfbosh-cicd-sa_key))
+          STEMCELL_SCRIPT: ((stemcell.script))
         run:
           path: bash
           args:
@@ -67,7 +66,8 @@
             cp -rn cf-deployment-assets/ cicd-deployment-artifacts/
             echo "* CF deployment assets tarball: ${cf_deploy_assets_tarball}" >> log_dir/${log_file}
 
-            noble_stemcell_tarball=$(find noble-stemcells -type f -name "bosh-stemcell-*-gdch-kvm-ubuntu-noble.tgz" -printf "%f")
+            eval "$STEMCELL_SCRIPT"
+            download_noble_stemcell noble-stemcells cicd-deployment-artifacts/noble-stemcells/url
             echo "* CF Noble stemcell tarball: ${noble_stemcell_tarball}" >> log_dir/${log_file}
 
             echo "[INFO] Authenticating Concourse container as CI Service Account to access the CI GCS bucket"
