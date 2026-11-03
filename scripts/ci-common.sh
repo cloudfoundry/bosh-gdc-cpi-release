@@ -317,6 +317,74 @@ resolve_cpi_integ_filter() {
   export CPI_INTEG_FILTER
 }
 
+# has_passing_manual_pr_check_run returns 0 (true) on pull_request events when
+# an authorized maintainer has already executed a passing manual integration
+# test run (issue_comment '/test-integration' or workflow_dispatch) on the exact
+# PR head commit SHA. This allows re-running a previously failed pull_request
+# job (e.g. from an external contributor or fork, or after a transient staging
+# flake) to turn green without re-running tests or exposing GDC secrets.
+has_passing_manual_pr_check_run() {
+  local pr_head_sha="$1"
+  local check_name="${2:-${CHECK_NAME:-BOSH CPI Integration Test (GDC Staging)}}"
+  if [[ -z "${pr_head_sha}" || -z "${GH_TOKEN:-}" || -z "${GITHUB_REPOSITORY:-}" ]]; then
+    return 1
+  fi
+
+  local check_runs_json
+  check_runs_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${pr_head_sha}/check-runs?per_page=100" 2>/dev/null || true)
+  if [[ -z "${check_runs_json}" ]]; then
+    return 1
+  fi
+
+  local candidates
+  candidates=$(printf '%s\n' "${check_runs_json}" | jq -r --arg name "${check_name}" '
+    .check_runs[]?
+    | select(.name == $name and .app.slug == "github-actions" and .status == "completed" and .conclusion == "success")
+    | "\(.id)\t\(.output.summary // "")"
+  ' 2>/dev/null || true)
+  if [[ -z "${candidates}" ]]; then
+    return 1
+  fi
+
+  local check_id summary manual_run_id run_json run_path run_event run_branch run_status run_conclusion run_actor
+  while IFS=$'\t' read -r check_id summary; do
+    [[ -z "${check_id}" ]] && continue
+    manual_run_id=$(printf '%s\n' "${summary}" | sed -nE 's|.*/actions/runs/([0-9]+).*|\1|p' | head -n 1 || true)
+    [[ -z "${manual_run_id}" || "${manual_run_id}" == "${GITHUB_RUN_ID:-}" ]] && continue
+
+    run_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${manual_run_id}" 2>/dev/null || true)
+    [[ -z "${run_json}" ]] && continue
+
+    run_path=$(printf '%s\n' "${run_json}" | jq -r '.path // empty')
+    run_event=$(printf '%s\n' "${run_json}" | jq -r '.event // empty')
+    run_branch=$(printf '%s\n' "${run_json}" | jq -r '.head_branch // empty')
+    run_status=$(printf '%s\n' "${run_json}" | jq -r '.status // empty')
+    run_conclusion=$(printf '%s\n' "${run_json}" | jq -r '.conclusion // empty')
+    run_actor=$(printf '%s\n' "${run_json}" | jq -r '.actor.login // empty')
+
+    if [[ "${run_path}" != ".github/workflows/integration-test.yaml" ]]; then
+      continue
+    fi
+    if [[ "${run_event}" != "issue_comment" && "${run_event}" != "workflow_dispatch" ]]; then
+      continue
+    fi
+    if [[ "${run_branch}" != "main" ]]; then
+      continue
+    fi
+    if [[ "${run_status}" == "completed" && "${run_conclusion}" != "success" ]]; then
+      continue
+    fi
+    if ! is_authorized_maintainer "${run_actor}" ""; then
+      continue
+    fi
+
+    echo "Verified passing maintainer-triggered check-run ${check_id} (run ${manual_run_id} by @${run_actor}) on ${pr_head_sha:0:7}; skipping duplicate integration test execution."
+    return 0
+  done <<<"${candidates}"
+
+  return 1
+}
+
 # check_ci_preconditions verifies whether the integration test should run when
 # triggered by GitHub Actions, and checks out the target PR on manual dispatch
 # or '/test-integration' PR comment.
@@ -338,11 +406,19 @@ check_ci_preconditions() {
   fi
 
   if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && -f "${GITHUB_EVENT_PATH:-}" ]]; then
-    local head_repo author_association pr_user pr_number
+    local head_repo author_association pr_user pr_number pr_head_sha
     head_repo=$(jq -r '.pull_request.head.repo.full_name // empty' "${GITHUB_EVENT_PATH}")
     author_association=$(jq -r '.pull_request.author_association // empty' "${GITHUB_EVENT_PATH}")
     pr_user=$(jq -r '.pull_request.user.login // empty' "${GITHUB_EVENT_PATH}")
     pr_number=$(jq -r '.pull_request.number // empty' "${GITHUB_EVENT_PATH}")
+    pr_head_sha=$(jq -r '.pull_request.head.sha // empty' "${GITHUB_EVENT_PATH}")
+
+    if has_passing_manual_pr_check_run "${pr_head_sha}"; then
+      if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+        echo "should_run=false" >>"${GITHUB_OUTPUT}"
+      fi
+      exit 0
+    fi
 
     if [[ "${head_repo}" != "${GITHUB_REPOSITORY:-}" ]]; then
       echo "Skipping automatic integration test for forked PR (${head_repo})."
@@ -520,21 +596,15 @@ complete_pr_check_run() {
       echo "Warning: Failed to update check-run ${PR_CHECK_RUN_ID} on PR #${PR_NUMBER}."
 
     if [[ "${conclusion}" == "success" && -n "${PR_HEAD_SHA:-}" ]]; then
-      local check_name="${CHECK_NAME:-BOSH CPI Integration Test (GDC Staging)}"
-      local existing_failed_ids
-      existing_failed_ids=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-runs" \
-        --jq ".check_runs[] | select(.name == \"${check_name}\" and .app.slug == \"github-actions\" and .conclusion == \"failure\") | .id" 2>/dev/null || true)
-      local failed_id
-      while IFS= read -r failed_id; do
-        [[ -z "${failed_id}" || "${failed_id}" == "${PR_CHECK_RUN_ID}" ]] && continue
-        echo "Updating previous failed check-run ${failed_id} on PR #${PR_NUMBER} (${PR_HEAD_SHA}) with conclusion=${conclusion}..."
-        gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${failed_id}" \
-          -f status="completed" \
-          -f conclusion="${conclusion}" \
-          -f details_url="${run_url}" \
-          -f "output[title]=${title}" \
-          -f "output[summary]=Superseded by passing ${GITHUB_EVENT_NAME:-workflow_dispatch} run (${run_url})." >/dev/null 2>&1 || true
-      done <<<"${existing_failed_ids}"
+      local failed_pr_run_ids failed_run_id
+      failed_pr_run_ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/integration-test.yaml/runs?event=pull_request&head_sha=${PR_HEAD_SHA}&per_page=10" \
+        --jq '.workflow_runs[]? | select(.status == "completed" and .conclusion == "failure") | .id' 2>/dev/null || true)
+      while IFS= read -r failed_run_id; do
+        [[ -z "${failed_run_id}" || "${failed_run_id}" == "${GITHUB_RUN_ID:-}" ]] && continue
+        echo "Triggering rerun of failed pull_request workflow run ${failed_run_id} on PR #${PR_NUMBER} (${PR_HEAD_SHA:0:7}) to clear required status check..."
+        gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${failed_run_id}/rerun-failed-jobs" >/dev/null 2>&1 ||
+          echo "Warning: Failed to trigger rerun of workflow run ${failed_run_id}."
+      done <<<"${failed_pr_run_ids}"
     fi
   fi
 
