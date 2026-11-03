@@ -60,19 +60,19 @@ build: ensure-go build-linux build-darwin
 build-linux: ensure-go
 	@mkdir -p $(BIN_DIR)
 	@echo "[INFO] Compiling CPI binary for Linux ($(LINUX_ARCH))..."
-	@CGO_ENABLED=0 GOOS=linux GOARCH=$(LINUX_ARCH) go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(BIN_DIR)/cpi $(REPO_ROOT)/bosh-cpi/cmd
+	@cd $(REPO_ROOT) && CGO_ENABLED=0 GOOS=linux GOARCH=$(LINUX_ARCH) go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(BIN_DIR)/cpi ./bosh-cpi/cmd
 
 build-darwin: ensure-go
 	@mkdir -p $(BIN_DIR)
 	@echo "[INFO] Compiling CPI binary for Darwin ($$(go env GOHOSTARCH))..."
-	@CGO_ENABLED=0 GOOS=darwin go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(BIN_DIR)/cpi_darwin $(REPO_ROOT)/bosh-cpi/cmd
+	@cd $(REPO_ROOT) && CGO_ENABLED=0 GOOS=darwin go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(BIN_DIR)/cpi_darwin ./bosh-cpi/cmd
 
 # Prepare CPI binaries in src/bosh-gdc-cpi for BOSH packaging
 release-binaries: ensure-go
 	@mkdir -p $(SRC_DIR)
 	@echo "[INFO] Preparing CPI binaries for BOSH packaging in $(SRC_DIR)..."
-	@CGO_ENABLED=0 GOOS=linux GOARCH=$(LINUX_ARCH) go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(SRC_DIR)/cpi_binary_linux $(REPO_ROOT)/bosh-cpi/cmd
-	@CGO_ENABLED=0 GOOS=darwin go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(SRC_DIR)/cpi_binary_darwin $(REPO_ROOT)/bosh-cpi/cmd
+	@cd $(REPO_ROOT) && CGO_ENABLED=0 GOOS=linux GOARCH=$(LINUX_ARCH) go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(SRC_DIR)/cpi_binary_linux ./bosh-cpi/cmd
+	@cd $(REPO_ROOT) && CGO_ENABLED=0 GOOS=darwin go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(SRC_DIR)/cpi_binary_darwin ./bosh-cpi/cmd
 
 # Run unit tests across all packages (Go and Python release helpers)
 test: ensure-go unittests py-test
