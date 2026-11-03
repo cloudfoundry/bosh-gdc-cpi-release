@@ -258,7 +258,7 @@
       build_candidate: '1. Build & Verify CPI',
       concourse: '2. Concourse Pipeline',
       vuln_scan: '3. Vulnerability Scan',
-      release: '4. GitHub & GCS Release'
+      release: '4. GitHub & bosh.io Release'
     };
 
     const GITHUB_REPO = 'cloudfoundry/bosh-gdc-cpi-release';
@@ -531,7 +531,7 @@
               <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px] font-mono text-slate-400 bg-slate-950/60 p-3 rounded border border-slate-800">
                 <div><span class="text-slate-500">SHA-256:</span> ${run.sha256 ? run.sha256.substring(0, 24) + '...' : 'verified'}</div>
                 <div><span class="text-slate-500">Candidate GCS:</span> ${run.beta_gcs_uri || 'gs://cfbosh-cicd/cpi_releases/'}</div>
-                <div><span class="text-slate-500">External Release:</span> ${mode === 'release' ? (run.prod_gcs_uri || 'GitHub Releases') : 'Skipped (snapshot mode)'}</div>
+                <div><span class="text-slate-500">External Release:</span> ${mode === 'release' ? (run.release_url || 'GitHub Releases & bosh.io') : 'Skipped (snapshot mode)'}</div>
               </div>
             </td>
           </tr>

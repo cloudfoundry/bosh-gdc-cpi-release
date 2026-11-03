@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       release_mode:
-        description: 'Pipeline execution mode (snapshot = internal GCS validation only, release = official SemVer GitHub & GCS release; release is only honoured on main)'
+        description: 'Pipeline execution mode (snapshot = internal GCS validation only, release = official SemVer GitHub & bosh.io release; release is only honoured on main)'
         required: false
         default: 'snapshot'
         type: choice
@@ -327,7 +327,7 @@ jobs:
           retention-days: 14
 
   release:
-    name: 4. Release CPI Artifact (GitHub & GCS)
+    name: 4. Release CPI Artifact (GitHub Releases & bosh.io)
     needs: [prepare, build_candidate, concourse]
     if: >-
       always() &&
@@ -340,7 +340,6 @@ jobs:
     timeout-minutes: 30
     outputs:
       release_url: ${{ steps.publish.outputs.release_url }}
-      prod_gcs_uri: ${{ steps.publish.outputs.prod_gcs_uri }}
       sha256: ${{ steps.publish.outputs.sha256 }}
     steps:
       - name: Checkout Target Revision
@@ -355,7 +354,7 @@ jobs:
           name: cpi-release-artifacts-${{ needs.prepare.outputs.version }}
           path: releases/bosh-gdc-cpi
 
-      - name: Publish CPI Release to GitHub Releases & Production GCS Bucket
+      - name: Publish CPI Release to GitHub Releases & bosh.io
         id: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -415,7 +414,6 @@ jobs:
           RELEASE_MODE: ${{ needs.prepare.outputs.release_mode }}
           SKIP_CONCOURSE: ${{ needs.prepare.outputs.skip_concourse }}
           RELEASE_SHA256: ${{ needs.build_candidate.outputs.sha256 }}
-          PROD_GCS_URI: ${{ needs.release.outputs.prod_gcs_uri }}
           CONCOURSE_LOG_URI: ${{ needs.concourse.outputs.concourse_log_uri }}
           BUILD_CANDIDATE_RESULT: ${{ needs.build_candidate.result }}
           CONCOURSE_RESULT: ${{ needs.concourse.result }}
