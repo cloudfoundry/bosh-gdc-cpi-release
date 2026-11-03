@@ -19,8 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -48,11 +46,6 @@ const (
 	cpiValue  = "bosh-cpi"
 )
 
-var (
-	cpiLabels         = map[string]string{vmconsts.CPILabel: cpiValue}
-	stemcellNameRegex = regexp.MustCompile(`^stemcell-([a-zA-Z0-9.-]+)-[a-zA-Z0-9-]+$`)
-)
-
 // sanitizeVersion replaces dots with hyphens in a stemcell version string so
 // the resulting VirtualMachineImageImport / VirtualMachineImage resource name
 // satisfies the GDC admission webhook constraint ("must not contain dots").
@@ -75,33 +68,34 @@ type imageService interface {
 }
 
 type Stemcells struct {
-	cloudClient        client.Client
-	storage            storageService
-	imageService       imageService
-	projectID          string
-	uuidGen            uuid.Generator
-	logger             cfboshlog.Logger
-	ignoreConflict     bool // when opt-in, ignore image import conflict
-	timeout            *config.WaitTimeout
-	refreshImageImport bool
+	cloudClient    client.Client
+	storage        storageService
+	imageService   imageService
+	projectID      string
+	uuidGen        uuid.Generator
+	logger         cfboshlog.Logger
+	ignoreConflict bool // when opt-in, ignore image import conflict
+	timeout        *config.WaitTimeout
 }
 
-func NewStemcells(cloudClient client.Client, projectID string, storage storageService, imageService imageService, uuidGen uuid.Generator, logger cfboshlog.Logger, timeout *config.WaitTimeout, refreshImageImport bool) *Stemcells {
+func NewStemcells(cloudClient client.Client, projectID string, storage storageService, imageService imageService, uuidGen uuid.Generator, logger cfboshlog.Logger, timeout *config.WaitTimeout) *Stemcells {
 	return &Stemcells{
-		cloudClient:        cloudClient,
-		storage:            storage,
-		imageService:       imageService,
-		projectID:          projectID,
-		uuidGen:            uuidGen,
-		logger:             logger,
-		ignoreConflict:     false,
-		timeout:            timeout,
-		refreshImageImport: refreshImageImport,
+		cloudClient:    cloudClient,
+		storage:        storage,
+		imageService:   imageService,
+		projectID:      projectID,
+		uuidGen:        uuidGen,
+		logger:         logger,
+		ignoreConflict: false,
+		timeout:        timeout,
 	}
 }
 
 // CreateStemcell only supports the import of stemcell image from the local path. The chosen version of stemcell needs to
-// be downloaded and stored in the working machine that invokes the CPI method
+// be downloaded and stored in the working machine that invokes the CPI method.
+// Each call always creates a new, independently-owned VirtualMachineImage so that separate CPI instances
+// (e.g. create-env and the director) can safely delete their own stemcell without affecting the other.
+// The GCS object upload is idempotent (same version → same object name) to avoid redundant byte transfers.
 func (s *Stemcells) CreateStemcell(imagePath string, stemcellCloudProps apiv1.StemcellCloudProps) (apiv1.StemcellCID, error) {
 	if len(imagePath) == 0 {
 		return apiv1.StemcellCID{}, errors.New("must provide non-empty imagePath")
@@ -116,72 +110,25 @@ func (s *Stemcells) CreateStemcell(imagePath string, stemcellCloudProps apiv1.St
 		return apiv1.StemcellCID{}, fmt.Errorf("there are invalid stemcell properties: %w", err)
 	}
 
-	if !s.refreshImageImport {
-		s.logger.Info("CreateStemcell", "refreshImageImport is unset; searching for existing stemcell with version: %s", props.Version)
-		image, err := s.findExistingImage(context.Background(), props.Version)
-		if err != nil {
-			return apiv1.StemcellCID{}, fmt.Errorf("find existing image: %w", err)
-		}
-		if image != nil {
-			s.logger.Info("CreateStemcell", "found an existing stemcell with version %s created by CPI; reusing this stemcell.", props.Version)
-			return apiv1.NewStemcellCID(image.Name), nil
-		}
-
-		s.logger.Info("CreateStemcell", "no matching images found for stemcell version %s, initiating search for successful image imports", props.Version)
-		successfulImport, err := s.findMostRecentSuccessfulImport(context.Background(), props.Version)
-		if err != nil {
-			return apiv1.StemcellCID{}, fmt.Errorf("find successful image import: %w", err)
-		}
-		if successfulImport != nil {
-			_, err := s.imageService.Get(context.Background(), successfulImport.Name)
-			if err == nil {
-				s.logger.Info("CreateStemcell", "found successful import %s with existing image, adding label", successfulImport.Name)
-				if err := s.addLabelToImage(context.Background(), successfulImport.Name); err != nil {
-					return apiv1.StemcellCID{}, fmt.Errorf("adding label to existing image %s: %w", successfulImport.Name, err)
-				}
-				return apiv1.NewStemcellCID(successfulImport.Name), nil
-			} else if !apierrors.IsNotFound(err) {
-				return apiv1.StemcellCID{}, fmt.Errorf("getting virtual machine image %s: %w", successfulImport.Name, err)
-			}
-			s.logger.Info("CreateStemcell", "successful import %s found but corresponding image was not found in project %s, new image import will be triggered", successfulImport.Name, s.projectID)
-		}
-	}
-	// Check for any concurrent image imports
-	ongoingBYO, ongoingBYOErr := s.findConcurrentImportInProgress(context.Background(), props.Version)
-
-	if ongoingBYOErr != nil {
-		return apiv1.StemcellCID{}, fmt.Errorf("error finding other ongoing VirtualMachineImageImport processes: %w", ongoingBYOErr)
-	}
-
-	if ongoingBYO != nil {
-		s.logger.Info("CreateStemcell", "Found an ongoing VirtualMachineImageImport process CPI will be using this stemcell: %w", ongoingBYO.Name)
-		if err := s.imageService.WaitUntilImageImportComplete(context.Background(), ongoingBYO.Name, time.Duration(s.timeout.StemcellCreation)*time.Minute); err != nil {
-			return apiv1.StemcellCID{}, fmt.Errorf("error occurred while waiting for an ongoing VirtualMachineImageImport Process %w", err)
-		}
-		return apiv1.NewStemcellCID(ongoingBYO.Name), nil
-	}
-
-	original_uuid, err := s.uuidGen.Generate()
+	originalUUID, err := s.uuidGen.Generate()
 	if err != nil {
 		return apiv1.StemcellCID{}, fmt.Errorf("generate uuid: %w", err)
 	}
 	// make the stemcell ID shorter to avoid length validation error during image import.
 	// given the scale of images in object storage bucket, the collision rate is very low,
 	// so it's safe to truncate the first 8 chars of UUID
-	stemcellUUID := strings.Split(original_uuid, "-")[0]
+	stemcellUUID := strings.Split(originalUUID, "-")[0]
 	stemcellCID := apiv1.NewStemcellCID(
 		fmt.Sprintf("stemcell-%s-%s", sanitizeVersion(props.Version), stemcellUUID),
 	)
 
-	// Step 1: Upload Image to GCS Bucket, where in the storage class makes sure the idempotency is maintainted at this step
-	// Upload logic start
+	// Step 1: Upload Image to GDC Bucket, idempotent (skips re-upload if object already exists))
 	imageObjectName, err := s.uploadImageToBucket(imagePath, props)
 	if err != nil {
 		return apiv1.StemcellCID{}, fmt.Errorf("upload stemcell image from local path %s: %w", imagePath, err)
 	}
 
-	// Step 2: The VM Image import step takes place based on the stemcell image that was uploaded and this is where idempotency is required to be achieved
-	// VirtualMachineImageImport Creation logic start
+	// Step 2: Import as a new, uniquely-named VirtualMachineImage owned by this CPI call
 	ctx := context.Background()
 	if err := s.importImage(ctx, imageObjectName, stemcellCID, props); err != nil {
 		return apiv1.StemcellCID{}, fmt.Errorf("import stemcell image: %w", err)
@@ -194,20 +141,23 @@ func (s *Stemcells) CreateStemcell(imagePath string, stemcellCloudProps apiv1.St
 func (s *Stemcells) DeleteStemcell(cid apiv1.StemcellCID) error {
 	ctx := context.Background()
 	stemcellID := cid.AsString()
+	// Delete the Image and ImageImport independently: a prior call may have
+	// removed one but not the other, so each step must tolerate "already gone"
+	// (IsNotFound) and still proceed to delete the remaining resource.
 	if err := s.imageService.DeleteImage(ctx, stemcellID); err != nil {
 		if apierrors.IsNotFound(err) {
 			s.logger.Info("DeleteStemcell", "stemcell %q doesn't exist", stemcellID)
-			return nil
+		} else {
+			return fmt.Errorf("delete stemcell: %w", err)
 		}
-		return fmt.Errorf("delete stemcell: %w", err)
 	}
 
 	if err := s.imageService.DeleteImageImport(ctx, stemcellID); err != nil {
 		if apierrors.IsNotFound(err) {
 			s.logger.Info("DeleteStemcell", "stemcell image import %q doesn't exist", stemcellID)
-			return nil
+		} else {
+			return fmt.Errorf("delete stemcell image import: %w", err)
 		}
-		return fmt.Errorf("delete stemcell image import: %w", err)
 	}
 
 	if err := s.imageService.WaitUntilImageDeleted(ctx, stemcellID, time.Duration(s.timeout.StemcellDeletion)*time.Minute); err != nil {
@@ -262,6 +212,9 @@ func (s *Stemcells) importImage(ctx context.Context, imageObjectName string, cid
 		imageImport.ObjectMeta = metav1.ObjectMeta{
 			GenerateName: stemcellID,
 			Namespace:    s.projectID,
+			Labels: map[string]string{
+				vmconsts.CPILabel: cpiValue,
+			},
 		}
 	}
 
@@ -330,30 +283,6 @@ func (s *Stemcells) addLabelToImage(ctx context.Context, stemcellID string) erro
 	return nil
 }
 
-func (s *Stemcells) findExistingImage(ctx context.Context, version string) (*vmv1.VirtualMachineImage, error) {
-	imageList := &vmv1.VirtualMachineImageList{}
-
-	if err := s.cloudClient.List(ctx, imageList, client.InNamespace(s.projectID), client.MatchingLabels(cpiLabels)); err != nil {
-		return nil, fmt.Errorf("listing virtual machine images: %w", err)
-	}
-
-	sort.Slice(imageList.Items, func(i, j int) bool {
-		return imageList.Items[i].CreationTimestamp.Time.After(imageList.Items[j].CreationTimestamp.Time)
-	})
-
-	sanitizedVer := sanitizeVersion(version)
-	for _, image := range imageList.Items {
-		matches := stemcellNameRegex.FindStringSubmatch(image.Name)
-		if len(matches) != 2 {
-			continue
-		}
-		if matches[1] == version || matches[1] == sanitizedVer {
-			return &image, nil
-		}
-	}
-	return nil, nil
-}
-
 func (s *Stemcells) parseOSVersion(props Property) (vmv1.OSName, error) {
 	// Default to Ubuntu 22.04 OS tag
 	osVersion := vmv1.Ubuntu2204
@@ -363,69 +292,4 @@ func (s *Stemcells) parseOSVersion(props Property) (vmv1.OSName, error) {
 	}
 
 	return osVersion, nil
-}
-
-func (s *Stemcells) findConcurrentImportInProgress(ctx context.Context, version string) (*vmv1.VirtualMachineImageImport, error) {
-	importList := &vmv1.VirtualMachineImageImportList{}
-	if err := s.cloudClient.List(ctx, importList, client.InNamespace(s.projectID), client.MatchingLabels(cpiLabels)); err != nil {
-		s.logger.Error("findConcurrentImportInProgress", "Failed to list VirtualMachineImageImports: %v", err)
-		return nil, err
-	}
-
-	for _, item := range importList.Items {
-		if item.Spec.Source.ObjectStorage != nil {
-			// objectName is expected to be in format "stemcell-raw-image-<version>"
-			importVersion := strings.TrimPrefix(item.Spec.Source.ObjectStorage.ObjectName, "stemcell-raw-image-")
-			if importVersion == version {
-				for _, condition := range item.Status.Conditions {
-					if condition.Type == "Ready" && condition.Status == metav1.ConditionFalse {
-						switch condition.Reason {
-						case vmconsts.ImportJobComplete, vmconsts.ImportJobFailed:
-							continue
-						default:
-							return &item, nil
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return nil, nil
-}
-
-func (s *Stemcells) findMostRecentSuccessfulImport(ctx context.Context, version string) (*vmv1.VirtualMachineImageImport, error) {
-	importList := &vmv1.VirtualMachineImageImportList{}
-	if err := s.cloudClient.List(ctx, importList, client.InNamespace(s.projectID), client.MatchingLabels(cpiLabels)); err != nil {
-		s.logger.Error("findMostRecentSuccessfulImport", "Failed to list VirtualMachineImageImports: %v", err)
-		return nil, err
-	}
-
-	var successfulImports []vmv1.VirtualMachineImageImport
-
-	for _, item := range importList.Items {
-		if item.Spec.Source.ObjectStorage != nil {
-			importVersion := strings.TrimPrefix(item.Spec.Source.ObjectStorage.ObjectName, "stemcell-raw-image-")
-			if importVersion == version {
-				for _, condition := range item.Status.Conditions {
-					if condition.Type == "Ready" {
-						if condition.Status == metav1.ConditionTrue || condition.Reason == vmconsts.ImportJobComplete {
-							successfulImports = append(successfulImports, item)
-							break
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if len(successfulImports) == 0 {
-		return nil, nil
-	}
-
-	sort.Slice(successfulImports, func(i, j int) bool {
-		return successfulImports[i].CreationTimestamp.Time.After(successfulImports[j].CreationTimestamp.Time)
-	})
-
-	return &successfulImports[0], nil
 }

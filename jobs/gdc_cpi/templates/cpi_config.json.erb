@@ -93,9 +93,6 @@ end
 if_p("gdch.use_cloud_nat_gateways") do |use_cloud_nat_gateways|
   cpi_config_json["gdch"]["useCloudNATGateways"] = use_cloud_nat_gateways
 end
-if_p("gdch.refresh_image_import") do |refresh_image_import|
-  cpi_config_json["gdch"]["refreshImageImport"] = refresh_image_import
-end
 if_p("gdch.use_tier1_network") do |use_tier1_network|
   cpi_config_json["gdch"]["useTier1Network"] = use_tier1_network
 end

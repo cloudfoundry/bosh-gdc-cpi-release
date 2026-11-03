@@ -71,7 +71,6 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 					&mockImageServiceErrorCheckImage{},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[0]},
 					logger, &test.Timeout,
-					false,
 				),
 				"zone2": NewStemcells(
 					test.FakeClient(),
@@ -80,7 +79,6 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 					&mockImageServiceErrorCheckImage{},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[1]},
 					logger, &test.Timeout,
-					false,
 				),
 			},
 			wantError: fmt.Errorf(
@@ -98,7 +96,6 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 					&mockImageService{existingImage: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[0]},
 					logger, &test.Timeout,
-					false,
 				),
 				"zone2": NewStemcells(
 					test.FakeClient(),
@@ -107,7 +104,6 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 					&mockImageServiceErrorCheckImage{},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[1]},
 					logger, &test.Timeout,
-					false,
 				),
 			},
 			wantError: fmt.Errorf(
@@ -125,7 +121,6 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 						&mockImageService{existingImage: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 						&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[0]},
 						logger, &test.Timeout,
-						false,
 					)
 					s.ignoreConflict = true
 					return s
@@ -138,7 +133,6 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 						&mockImageService{existingImage: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 						&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[1]},
 						logger, &test.Timeout,
-						false,
 					)
 					s.ignoreConflict = true
 					return s
@@ -193,7 +187,6 @@ func TestDeleteMultizoneStemcells(t *testing.T) {
 					&mockImageService{existingImage: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[0]},
 					logger, &test.Timeout,
-					false,
 				),
 				"zone2": NewStemcells(
 					test.FakeClient(createVirtualMachineImageWithLabel(defaultStemcellID.AsString())),
@@ -202,7 +195,6 @@ func TestDeleteMultizoneStemcells(t *testing.T) {
 					&mockImageServiceErrorDeletion{image: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[1]},
 					logger, &test.Timeout,
-					false,
 				),
 			},
 			wantError: fmt.Errorf("Delete stemcell %q in zone \"zone2\": "+
@@ -219,7 +211,6 @@ func TestDeleteMultizoneStemcells(t *testing.T) {
 					&mockImageService{existingImage: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[0]},
 					logger, &test.Timeout,
-					false,
 				),
 				"zone2": NewStemcells(
 					test.FakeClient(),
@@ -228,7 +219,6 @@ func TestDeleteMultizoneStemcells(t *testing.T) {
 					&mockImageService{existingImage: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[1]},
 					logger, &test.Timeout,
-					false,
 				),
 			},
 		},

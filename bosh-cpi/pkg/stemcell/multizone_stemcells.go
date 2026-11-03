@@ -70,7 +70,7 @@ func NewMultizoneStemcells(cloudClients *kubeclient.KubeClients, uuidGen uuid.Ge
 		if err != nil {
 			return nil, fmt.Errorf("initiate storage service: %w", err)
 		}
-		zonalStemcell := NewStemcells(zonalKubeClient, projectId, storage, imageClient, uuidGen, logger, timeout, config.GDC.RefreshImageImport)
+		zonalStemcell := NewStemcells(zonalKubeClient, projectId, storage, imageClient, uuidGen, logger, timeout)
 		zonalStemcells[zone] = zonalStemcell
 	}
 	var leaderZone string

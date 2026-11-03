@@ -134,7 +134,7 @@ func TestCreateStemcell_Fail_EmptyImagePath(t *testing.T) {
 		Client:    c,
 		ProjectID: projectID,
 	}
-	stemcells := NewStemcells(c, projectID, defaultStorage, ic, uuidGen, logger, &test.Timeout, false)
+	stemcells := NewStemcells(c, projectID, defaultStorage, ic, uuidGen, logger, &test.Timeout)
 
 	_, err := stemcells.CreateStemcell("", defaultStemcellCloudProps)
 	if err == nil {
@@ -159,7 +159,7 @@ func TestCreateStemcell_Fail_PropertyParse(t *testing.T) {
 		Client:    c,
 		ProjectID: projectID,
 	}
-	stemcells := NewStemcells(c, projectID, defaultStorage, ic, uuidGen, logger, &test.Timeout, false)
+	stemcells := NewStemcells(c, projectID, defaultStorage, ic, uuidGen, logger, &test.Timeout)
 
 	_, err := stemcells.CreateStemcell(defaultImagePath, stemcellCloudProps)
 	if err == nil {
@@ -179,7 +179,7 @@ func TestCreateStemcell_Fail_PropertyValidation(t *testing.T) {
 		Client:    c,
 		ProjectID: projectID,
 	}
-	stemcells := NewStemcells(c, projectID, defaultStorage, ic, uuidGen, logger, &test.Timeout, false)
+	stemcells := NewStemcells(c, projectID, defaultStorage, ic, uuidGen, logger, &test.Timeout)
 
 	testCases := map[string]struct {
 		props       Property
@@ -266,7 +266,7 @@ func TestCreateStemcell_Fail_UUIDGeneration(t *testing.T) {
 		ProjectID: projectID,
 	}
 	errorUUIDGenerator := &errorUUIDGenerator{}
-	stemcells := NewStemcells(c, projectID, defaultStorage, ic, errorUUIDGenerator, logger, &test.Timeout, false)
+	stemcells := NewStemcells(c, projectID, defaultStorage, ic, errorUUIDGenerator, logger, &test.Timeout)
 
 	_, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
 	if err == nil {
@@ -302,7 +302,7 @@ func TestCreateStemcell_Fail_UploadFile(t *testing.T) {
 				Client:    c,
 				ProjectID: projectID,
 			}
-			stemcells := NewStemcells(c, projectID, tc.storage, ic, uuidGen, logger, &test.Timeout, false)
+			stemcells := NewStemcells(c, projectID, tc.storage, ic, uuidGen, logger, &test.Timeout)
 			stemcells.ignoreConflict = true
 
 			_, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
@@ -318,192 +318,66 @@ func TestCreateStemcell_Fail_UploadFile(t *testing.T) {
 	}
 }
 
-func TestCreateStemcell_Succeed_withImageNotCreatedByCPI(t *testing.T) {
-	imageImport := createImageImport(vmconsts.ImportJobComplete)
-	imageNotCreatedByCPI := createVirtualMachineImageWithoutCPILabel(defaultStemcellID.AsString())
-	otherImport := createVirtualMachineImageImport(otherVersion, vmconsts.ImportJobComplete, "test-import-complete")
-	c := test.FakeClient(imageImport, imageNotCreatedByCPI, otherImport)
-	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{}, uuidGen, logger, &test.Timeout, false)
-	stemcells.ignoreConflict = true
+func TestCreateStemcell_DistinctCIDsPerCall(t *testing.T) {
+	// Two calls with the same stemcell version must produce distinct CIDs so that
+	// independent CPI instances (e.g. create-env and the director) own separate
+	// VirtualMachineImage resources and can delete them independently.
+	uuidGen1 := &staticUUIDGenerator{}
+	uuidGen2 := &staticUUIDGenerator2{}
 
-	stemcellCID, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
+	c1 := test.FakeClient()
+	stemcells1 := NewStemcells(c1, projectID, defaultStorage, &mockImageService{}, uuidGen1, logger, &test.Timeout)
+	stemcells1.ignoreConflict = true
+
+	c2 := test.FakeClient()
+	stemcells2 := NewStemcells(c2, projectID, defaultStorage, &mockImageService{}, uuidGen2, logger, &test.Timeout)
+	stemcells2.ignoreConflict = true
+
+	cid1, err := stemcells1.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
 	if err != nil {
-		t.Fatalf("got unexpected error: %v", err)
+		t.Fatalf("first CreateStemcell got unexpected error: %v", err)
 	}
 
-	gotCID := stemcellCID.AsString()
-	wantCID := defaultStemcellID.AsString()
-	if gotCID != wantCID {
-		t.Fatalf("got created stemcell with CID '%s', expected stemcell with CID '%s'", gotCID, wantCID)
+	cid2, err := stemcells2.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
+	if err != nil {
+		t.Fatalf("second CreateStemcell got unexpected error: %v", err)
+	}
+
+	if cid1.AsString() == cid2.AsString() {
+		t.Fatalf("two CreateStemcell calls for version %q produced the same CID %q; each call must own a distinct VirtualMachineImage", defaultVersion, cid1.AsString())
 	}
 }
 
-func TestCreateStemcell_Succeed_FallbackToSuccessfulImport_RecoverImage(t *testing.T) {
-	olderImport := createVirtualMachineImageImport(defaultVersion, vmconsts.ImportJobComplete, "older-import")
-	// Make it explicitly Success
-	olderImport.Status.Conditions[0].Status = metav1.ConditionTrue
-	olderImport.CreationTimestamp = metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
+func TestDeleteStemcell_IsolatedBetweenInstances(t *testing.T) {
+	// Two CPI instances each own a distinct stemcell CID (same version, different
+	// UUID). Deleting one instance's stemcell must not remove the other's image,
+	// proving ownership isolation across independent CPI callers.
+	cidA := apiv1.NewStemcellCID(fmt.Sprintf("stemcell-%s-%s", sanitizeVersion(defaultVersion), "aaaaaaaa"))
+	cidB := apiv1.NewStemcellCID(fmt.Sprintf("stemcell-%s-%s", sanitizeVersion(defaultVersion), "bbbbbbbb"))
 
-	newerImport := createVirtualMachineImageImport(defaultVersion, vmconsts.ImportJobComplete, "newer-import")
-	newerImport.Status.Conditions[0].Status = metav1.ConditionTrue
-	newerImport.CreationTimestamp = metav1.Time{Time: time.Now()}
+	store := &sharedImageStore{images: map[string]*vmv1.VirtualMachineImage{
+		cidA.AsString(): createVirtualMachineImageWithLabel(cidA.AsString()),
+		cidB.AsString(): createVirtualMachineImageWithLabel(cidB.AsString()),
+	}}
 
-	imageNotCreatedByCPI := createVirtualMachineImageWithoutCPILabel(defaultStemcellID.AsString())
+	c := test.FakeClient()
+	stemcells := NewStemcells(c, projectID, defaultStorage, &statefulImageService{store: store}, uuidGen, logger, &test.Timeout)
 
-	c := test.FakeClient(olderImport, newerImport, imageNotCreatedByCPI)
-	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{}, uuidGen, logger, &test.Timeout, false)
-	stemcells.ignoreConflict = true
-
-	stemcellCID, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
-	if err != nil {
-		t.Fatalf("got unexpected error: %v", err)
+	if err := stemcells.DeleteStemcell(cidA); err != nil {
+		t.Fatalf("deleting instance A stemcell got unexpected error: %v", err)
 	}
 
-	gotCID := stemcellCID.AsString()
-	wantCID := "newer-import"
-	if gotCID != wantCID {
-		t.Fatalf("got created stemcell with CID '%s', expected stemcell with CID '%s'", gotCID, wantCID)
+	if _, ok := store.images[cidA.AsString()]; ok {
+		t.Fatalf("stemcell %q should have been deleted", cidA.AsString())
 	}
-}
-
-func TestCreateStemcell_Fail_FallbackToSuccessfulImport_GetImageError(t *testing.T) {
-	olderImport := createVirtualMachineImageImport(defaultVersion, vmconsts.ImportJobComplete, "older-import")
-
-	olderImport.Status.Conditions[0].Status = metav1.ConditionTrue
-	olderImport.CreationTimestamp = metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
-
-	newerImport := createVirtualMachineImageImport(defaultVersion, vmconsts.ImportJobComplete, "newer-import")
-	newerImport.Status.Conditions[0].Status = metav1.ConditionTrue
-	newerImport.CreationTimestamp = metav1.Time{Time: time.Now()}
-
-	c := test.FakeClient(olderImport, newerImport)
-	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageServiceErrorGetImage{}, uuidGen, logger, &test.Timeout, false)
-	stemcells.ignoreConflict = true
-
-	_, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
-	if err == nil {
-		t.Fatal("got nil, expected error")
-	}
-
-	gotError := err.Error()
-	expectedError := "getting virtual machine image newer-import"
-	if !strings.Contains(gotError, expectedError) {
-		t.Fatalf("got error '%s', expected error '%s'", gotError, expectedError)
-	}
-}
-
-func TestCreateStemcell_Succeed_withExistingImage(t *testing.T) {
-	existingImage := createVirtualMachineImageWithLabel(defaultStemcellID.AsString())
-	c := test.FakeClient(existingImage)
-	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{}, uuidGen, logger, &test.Timeout, false)
-	stemcells.ignoreConflict = true
-
-	stemcellCID, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
-	if err != nil {
-		t.Fatalf("got unexpected error: %v", err)
-	}
-
-	gotCID := stemcellCID.AsString()
-	wantCID := defaultStemcellID.AsString()
-	if gotCID != wantCID {
-		t.Fatalf("got created stemcell with CID '%s', expected stemcell with CID '%s'", gotCID, wantCID)
-	}
-}
-
-func TestCreateStemcell_Succeed_withMultipleExistingImages(t *testing.T) {
-	olderImageName := fmt.Sprintf("stemcell-%s-%s", sanitizeVersion(defaultVersion), "old-uuid") // shortUUID is "aa..."
-	olderImage := createVirtualMachineImageWithLabel(olderImageName)
-	olderImage.CreationTimestamp = metav1.NewTime(time.Now().Add(-1 * time.Hour))
-
-	newerImageName := defaultStemcellID.AsString()
-	newerImage := createVirtualMachineImageWithLabel(newerImageName)
-	newerImage.CreationTimestamp = metav1.Now()
-
-	c := test.FakeClient(olderImage, newerImage)
-
-	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{existingImage: newerImage}, uuidGen, logger, &test.Timeout, false)
-	stemcells.ignoreConflict = true
-
-	stemcellCID, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
-	if err != nil {
-		t.Fatalf("got unexpected error: %v", err)
-	}
-
-	gotCID := stemcellCID.AsString()
-	if gotCID != newerImageName {
-		t.Fatalf("got created stemcell with CID '%s', expected stemcell with CID '%s'", gotCID, newerImageName)
-	}
-}
-
-func TestCreateStemcell_ForceRefresh_withOnGoingImportInProgress(t *testing.T) {
-	imageImport := createImageImport(vmconsts.ImportJobComplete)
-	existingImage := createVirtualMachineImageWithoutCPILabel(defaultStemcellID.AsString())
-	ongoingImport := createVirtualMachineImageImport(defaultVersion, vmconsts.ImportJobPending, "test-import-pending")
-	c := test.FakeClient(imageImport, existingImage, ongoingImport)
-	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{}, uuidGen, logger, &test.Timeout, true)
-	stemcells.ignoreConflict = true
-
-	stemcellCID, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
-	if err != nil {
-		t.Fatalf("got unexpected error: %v", err)
-	}
-
-	gotCID := stemcellCID.AsString()
-	wantCID := ongoingImport.Name
-	if gotCID != wantCID {
-		t.Fatalf("got created stemcell with CID '%s', expected stemcell with CID '%s'", gotCID, wantCID)
-	}
-}
-
-func TestCreateStemcell_ForceRefresh_withOtherImportsInTerminalState(t *testing.T) {
-	importComplete1 := createVirtualMachineImageImport(defaultVersion, vmconsts.ImportJobComplete, "test-import-complete")
-	importFailed := createVirtualMachineImageImport(defaultVersion, vmconsts.ImportJobFailed, "test-import-failed")
-
-	c := test.FakeClient(importComplete1, importFailed)
-	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{}, uuidGen, logger, &test.Timeout, true)
-	stemcells.ignoreConflict = true
-
-	stemcellCID, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
-	if err != nil {
-		t.Fatalf("got unexpected error: %v", err)
-	}
-
-	gotCID := stemcellCID.AsString()
-	wantCID := defaultStemcellID.AsString()
-	if gotCID != wantCID {
-		t.Fatalf("got created stemcell with CID '%s', expected stemcell with CID '%s'", gotCID, wantCID)
-	}
-}
-
-func TestCreateStemcell_Succeed_ForceRefresh(t *testing.T) {
-	existingImageName := fmt.Sprintf("stemcell-%s-existing", sanitizeVersion(defaultVersion))
-	existingImage := createVirtualMachineImageWithLabel(existingImageName)
-
-	c := test.FakeClient(existingImage)
-	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{}, uuidGen, logger, &test.Timeout, true)
-	stemcells.ignoreConflict = true
-
-	stemcellCID, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
-	if err != nil {
-		t.Fatalf("got unexpected error: %v", err)
-	}
-
-	gotCID := stemcellCID.AsString()
-	expectedCID := defaultStemcellID.AsString()
-
-	if gotCID != expectedCID {
-		t.Fatalf("got created stemcell with CID '%s', expected stemcell with CID '%s'", gotCID, expectedCID)
-	}
-
-	if gotCID == existingImageName {
-		t.Fatalf("got created stemcell with CID '%s', expected it to be different from existing image '%s'", gotCID, existingImageName)
+	if _, ok := store.images[cidB.AsString()]; !ok {
+		t.Fatalf("stemcell %q must remain intact after deleting a different instance's stemcell %q", cidB.AsString(), cidA.AsString())
 	}
 }
 
 func TestCreateStemcell_SanitizesDotsInVersion(t *testing.T) {
-	expectedCID := defaultStemcellID.AsString()
 	c := test.FakeClient()
-	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{existingImage: createVirtualMachineImageWithLabel(expectedCID)}, uuidGen, logger, &test.Timeout, true)
+	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{}, uuidGen, logger, &test.Timeout)
 	stemcells.ignoreConflict = true
 
 	stemcellCID, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
@@ -513,15 +387,12 @@ func TestCreateStemcell_SanitizesDotsInVersion(t *testing.T) {
 	if strings.Contains(stemcellCID.AsString(), ".") {
 		t.Fatalf("stemcell CID %q must not contain dots", stemcellCID.AsString())
 	}
-	if stemcellCID.AsString() != expectedCID {
-		t.Fatalf("got stemcell CID %q, want %q", stemcellCID.AsString(), expectedCID)
-	}
 }
 
 func TestCreateStemcell_Fail(t *testing.T) {
 	imageImport := createImageImport(vmconsts.ImportJobComplete)
 	c := test.FakeClient(imageImport)
-	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageServiceErrorCheckImage{}, uuidGen, logger, &test.Timeout, false)
+	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageServiceErrorCheckImage{}, uuidGen, logger, &test.Timeout)
 	stemcells.ignoreConflict = true
 
 	_, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
@@ -538,7 +409,7 @@ func TestCreateStemcell_Fail(t *testing.T) {
 
 func TestDeleteStemcell_Succeed(t *testing.T) {
 	c := test.FakeClient(defaultVMImage)
-	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{}, uuidGen, logger, &test.Timeout, false)
+	stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{}, uuidGen, logger, &test.Timeout)
 
 	if err := stemcells.DeleteStemcell(defaultStemcellID); err != nil {
 		t.Fatalf("got unexpected error: %v", err)
@@ -547,7 +418,7 @@ func TestDeleteStemcell_Succeed(t *testing.T) {
 
 func TestDeleteStemcell_NotExist_Noop(t *testing.T) {
 	c := test.FakeClient(defaultVMImage)
-	stemcells := NewStemcells(c, projectID, defaultStorage, &mockNonExistentImageService{}, uuidGen, logger, &test.Timeout, false)
+	stemcells := NewStemcells(c, projectID, defaultStorage, &mockNonExistentImageService{}, uuidGen, logger, &test.Timeout)
 
 	if err := stemcells.DeleteStemcell(defaultStemcellID); err != nil {
 		t.Fatalf("got unexpected error: %v", err)
@@ -572,7 +443,7 @@ func TestDeleteStemcell_Fail(t *testing.T) {
 	for id, tc := range testCases {
 		t.Run(id, func(t *testing.T) {
 			c := test.FakeClient()
-			stemcells := NewStemcells(c, projectID, defaultStorage, tc.mockImageService, uuidGen, logger, &test.Timeout, false)
+			stemcells := NewStemcells(c, projectID, defaultStorage, tc.mockImageService, uuidGen, logger, &test.Timeout)
 
 			err := stemcells.DeleteStemcell(defaultStemcellID)
 			if err == nil {
@@ -593,7 +464,7 @@ func TestUploadToImageBucket_Succeed(t *testing.T) {
 		Client:    c,
 		ProjectID: projectID,
 	}
-	stemcells := NewStemcells(c, projectID, defaultStorage, ic, uuidGen, logger, &test.Timeout, false)
+	stemcells := NewStemcells(c, projectID, defaultStorage, ic, uuidGen, logger, &test.Timeout)
 
 	var props Property
 	if err := defaultStemcellCloudProps.As(&props); err != nil {
@@ -645,7 +516,7 @@ func TestParseOSVersion_Succeed(t *testing.T) {
 	for id, tc := range testCases {
 		t.Run(id, func(t *testing.T) {
 			c := test.FakeClient()
-			stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{}, uuidGen, logger, &test.Timeout, false)
+			stemcells := NewStemcells(c, projectID, defaultStorage, &mockImageService{}, uuidGen, logger, &test.Timeout)
 
 			gotOSVersion, err := stemcells.parseOSVersion(tc.props)
 			if err != nil {
@@ -670,6 +541,12 @@ type staticUUIDGenerator struct{}
 
 func (e *staticUUIDGenerator) Generate() (string, error) {
 	return staticUUID, nil
+}
+
+type staticUUIDGenerator2 struct{}
+
+func (e *staticUUIDGenerator2) Generate() (string, error) {
+	return "bb827500-1a9z-22ee-b962-0242ac121234", nil
 }
 
 // A mock implementation of storage interface that always succeed
@@ -721,6 +598,47 @@ func (m *mockImageService) WaitUntilImageDeleted(ctx context.Context, imageID st
 	return nil
 }
 func (m *mockImageService) WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
+	return nil
+}
+
+// sharedImageStore models a map-backed VirtualMachineImage registry keyed by
+// stemcell ID, letting a test observe that deleting one instance's stemcell
+// leaves another instance's stemcell intact.
+type sharedImageStore struct {
+	images map[string]*vmv1.VirtualMachineImage
+}
+
+// statefulImageService is a map-backed imageService whose Delete* methods
+// actually remove the keyed entry, so delete-isolation can be asserted against
+// the surviving entries.
+type statefulImageService struct {
+	store *sharedImageStore
+}
+
+func (m *statefulImageService) Get(_ context.Context, imageID string) (*vmv1.VirtualMachineImage, error) {
+	if image, ok := m.store.images[imageID]; ok {
+		return image, nil
+	}
+	return nil, apierrors.NewNotFound(schema.GroupResource{Group: "virtualmachine.gdc.goog", Resource: "virtualmachineimages"}, imageID)
+}
+
+func (m *statefulImageService) DeleteImage(_ context.Context, imageID string) error {
+	delete(m.store.images, imageID)
+	return nil
+}
+func (m *statefulImageService) DeleteImageImport(_ context.Context, imageID string) error {
+	return nil
+}
+func (m *statefulImageService) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
+	return nil
+}
+func (m *statefulImageService) WaitUntilVMImageCreation(ctx context.Context, imageID string, timeout time.Duration) error {
+	return nil
+}
+func (m *statefulImageService) WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
+	return nil
+}
+func (m *statefulImageService) WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
 	return nil
 }
 
