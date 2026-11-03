@@ -82,10 +82,8 @@ RELEASE_TAG="v${RELEASE_VERSION#v}"
 RELEASE_MODE_VAL="${RELEASE_MODE:-snapshot}"
 if [[ "${RELEASE_MODE_VAL}" == "release" ]]; then
   RELEASE_URL="${SERVER_URL}/${REPO}/releases/tag/${RELEASE_TAG}"
-  PROD_GCS_URI="${PROD_GCS_URI:-gs://cfbosh-cicd/cpi_releases/bosh-gdc-cpi-${RELEASE_VERSION#v}.tgz}"
 else
   RELEASE_URL=""
-  PROD_GCS_URI="N/A (snapshot mode — internal gs://cfbosh-cicd only)"
 fi
 COMMIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 COMMIT_URL="${SERVER_URL}/${REPO}/commit/${COMMIT_SHA}"
@@ -193,7 +191,6 @@ if curl -fsSL --max-time 10 "${GH_AUTH_HEADER[@]}" "https://api.github.com/repos
       --arg actor "${active_actor}" \
       --arg url "${active_url}" \
       --arg beta_gcs_uri "gs://cfbosh-cicd/cpi_releases/bosh_gdch_cpi_release_${active_ver#v}.tgz" \
-      --arg prod_gcs_uri "N/A (snapshot mode — internal gs://cfbosh-cicd only)" \
       --arg s_build "${s_build}" \
       --arg s_concourse "${s_concourse}" \
       --arg s_vuln "${s_vuln}" \
@@ -217,7 +214,6 @@ if curl -fsSL --max-time 10 "${GH_AUTH_HEADER[@]}" "https://api.github.com/repos
         release_url: "",
         concourse_log: "gs://cfbosh-cicd/cicd-deployment-logs/",
         beta_gcs_uri: $beta_gcs_uri,
-        prod_gcs_uri: $prod_gcs_uri,
         stages: {
           build_candidate: $s_build,
           concourse: $s_concourse,
@@ -273,7 +269,6 @@ NEW_ENTRY="$(jq -n \
   --arg release_url "${RELEASE_URL}" \
   --arg concourse_log "${CONCOURSE_LOG_URI:-gs://cfbosh-cicd/cicd-deployment-logs/}" \
   --arg beta_gcs_uri "gs://cfbosh-cicd/cpi_releases/bosh_gdch_cpi_release_${RELEASE_VERSION#v}.tgz" \
-  --arg prod_gcs_uri "${PROD_GCS_URI}" \
   --arg s_build "${STAGE_BUILD}" \
   --arg s_concourse "${STAGE_CONCOURSE}" \
   --arg s_vuln "${STAGE_VULN}" \
@@ -297,7 +292,6 @@ NEW_ENTRY="$(jq -n \
     release_url: $release_url,
     concourse_log: $concourse_log,
     beta_gcs_uri: $beta_gcs_uri,
-    prod_gcs_uri: $prod_gcs_uri,
     stages: {
       build_candidate: $s_build,
       concourse: $s_concourse,
@@ -333,7 +327,9 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "| **Skip Concourse** | \`${SKIP_CONCOURSE:-false}\` |"
     echo "| **Duration** | \`${DURATION_STR}\` |"
     echo "| **Candidate GCS URI** | \`gs://cfbosh-cicd/cpi_releases/bosh_gdch_cpi_release_${RELEASE_VERSION#v}.tgz\` |"
-    echo "| **Production GCS URI** | \`gs://gdc-external-sap/cpi_releases/bosh-gdc-cpi-${RELEASE_VERSION#v}.tgz\` |"
+    if [[ -n "${RELEASE_URL}" ]]; then
+      echo "| **GitHub Release** | [\`${RELEASE_TAG}\`](${RELEASE_URL}) |"
+    fi
     echo ""
     echo "### Stage Breakdown"
     echo ""
@@ -341,7 +337,7 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "| :--- | :--- |"
     echo "| 1. Build Candidate CPI & Vulnerability Scan | \`${STAGE_BUILD}\` |"
     echo "| 2. Concourse Deployment Pipeline (GKE) | \`${STAGE_CONCOURSE}\` (skip_concourse=\`${SKIP_CONCOURSE:-false}\`) |"
-    echo "| 3. Publish Release (GitHub Release & GCS) | \`${STAGE_RELEASE}\` |"
+    echo "| 3. Publish Release (GitHub Releases & bosh.io) | \`${STAGE_RELEASE}\` |"
   } >>"${GITHUB_STEP_SUMMARY}"
 fi
 

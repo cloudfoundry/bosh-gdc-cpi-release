@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 # Orchestrate SemVer resolution, candidate CPI build & vulnerability scanning,
-# and final GitHub + GCS release publishing for bosh-gdc-cpi-release.
+# and final GitHub + bosh.io release publishing for bosh-gdc-cpi-release.
 
 set -euo pipefail
 
@@ -29,7 +29,6 @@ NEXT_VERSION_MODE="${NEXT_VERSION_MODE:-bump-patch}"
 ALLOW_BRANCH="${ALLOW_BRANCH:-false}"
 CONCOURSE_STATUS="${CONCOURSE_STATUS:-succeeded}"
 BETA_GCS_BUCKET="${BETA_GCS_BUCKET:-gs://cfbosh-cicd}"
-PROD_GCS_BUCKET="${PROD_GCS_BUCKET:-gs://gdc-external-sap}"
 UPLOAD_TO_GCS="${UPLOAD_TO_GCS:-true}"
 PUBLISH_GITHUB_RELEASE="${PUBLISH_GITHUB_RELEASE:-true}"
 FORCE_RELEASE="${FORCE_RELEASE:-false}"
@@ -508,14 +507,12 @@ publish_release_stage() {
       {
         echo "release_skipped=true"
         echo "release_url="
-        echo "prod_gcs_uri=N/A (skipped — no new commits since ${latest_tag})"
         echo "sha256=${sha256}"
       } >>"${GITHUB_OUTPUT}"
     fi
     return 0
   fi
 
-  local published_gcs_bucket="${BETA_GCS_BUCKET}"
   if [[ "${UPLOAD_TO_GCS}" == "true" ]]; then
     echo "[INFO] Publishing CPI artifacts (${RELEASE_MODE} mode) to ${BETA_GCS_BUCKET}/cpi_releases/..."
     gcloud storage cp "${semver_tarball}" "${BETA_GCS_BUCKET}/cpi_releases/bosh-gdc-cpi-${version}.tgz"
@@ -525,11 +522,10 @@ publish_release_stage() {
   fi
 
   if [[ "${RELEASE_MODE}" != "release" ]]; then
-    echo "[INFO] Snapshot mode (${version}): skipping external GitHub Release, git tagging, and external GCS promotion."
+    echo "[INFO] Snapshot mode (${version}): skipping GitHub Release, git tagging, and bosh.io final-release metadata."
     if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
       {
         echo "release_url="
-        echo "prod_gcs_uri=${BETA_GCS_BUCKET}/cpi_releases/bosh-gdc-cpi-${version}.tgz"
         echo "sha256=${sha256}"
       } >>"${GITHUB_OUTPUT}"
     fi
@@ -537,18 +533,6 @@ publish_release_stage() {
   fi
 
   assert_release_ref "${version}"
-
-  if [[ "${UPLOAD_TO_GCS}" == "true" ]]; then
-    echo "[INFO] Mirroring official CPI release artifacts to external bucket ${PROD_GCS_BUCKET}/cpi_releases/ (if permitted)..."
-    if gcloud storage cp "${semver_tarball}" "${PROD_GCS_BUCKET}/cpi_releases/bosh-gdc-cpi-${version}.tgz" 2>/dev/null; then
-      gcloud storage cp "${semver_sha256_file}" "${PROD_GCS_BUCKET}/cpi_releases/bosh-gdc-cpi-${version}.tgz.sha256" || true
-      gcloud storage cp "${concourse_tarball}" "${PROD_GCS_BUCKET}/cpi_releases/bosh_gdch_cpi_release_${version}.tgz" || true
-      gcloud storage cp --content-type="text/markdown" "${vuln_report}" "${PROD_GCS_BUCKET}/vulnerability-reports/cpi/${version}.md" || true
-      published_gcs_bucket="${PROD_GCS_BUCKET}"
-    else
-      echo "[WARN] Service account does not have write access to ${PROD_GCS_BUCKET}; published to ${BETA_GCS_BUCKET} and GitHub Releases."
-    fi
-  fi
 
   local tag="v${version}"
   local repo="${GITHUB_REPOSITORY:-cloudfoundry/bosh-gdc-cpi-release}"
@@ -598,7 +582,7 @@ releases:
 | **Commit SHA** | \`$(git rev-parse --short HEAD)\` |
 | **SHA-256 Digest** | \`${sha256}\` |
 | **Concourse Stage** | \`${CONCOURSE_STATUS}\` |
-| **GCS Release Bucket** | \`${published_gcs_bucket}/cpi_releases/bosh-gdc-cpi-${version}.tgz\` |
+| **bosh.io Release** | [\`${repo}\`](https://bosh.io/releases/github.com/${repo}?version=${version}) |
 
 $(cat "${vuln_report}")
 EOF
@@ -667,7 +651,6 @@ EOF
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     {
       echo "release_url=https://github.com/${repo}/releases/tag/${tag}"
-      echo "prod_gcs_uri=${published_gcs_bucket}/cpi_releases/bosh-gdc-cpi-${version}.tgz"
       echo "sha256=${sha256}"
     } >>"${GITHUB_OUTPUT}"
   fi
