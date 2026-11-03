@@ -175,7 +175,7 @@ func (v *VMs) setVMMetadataInAnnotations(ctx context.Context, vm *vmv1.VirtualMa
 }
 
 // PerformReboot reboots a VM regardless of if it is powered on or off at the time of the call:
-// https://github.com/cloudfoundry/docs-bosh/blob/master/content/cpi-api-v2-method/reboot-vm.md
+// https://github.com/cloudfoundry/docs-bosh/blob/main/content/cpi-api-v2-method/reboot-vm.md
 func (v *VMs) PerformReboot(ctx context.Context, vm *vmv1.VirtualMachine) error {
 	vmState := vm.Status.State
 	v.logger.Debug("PerformReboot", "Rebooting VM %s in state %s", vm.Name, vmState)
@@ -441,7 +441,7 @@ func (v *VMs) createVM(ctx context.Context, input vmCreationInput) error {
 		return fmt.Errorf("create vm: %w", err)
 	}
 
-	// By BOSH CPI doc: https://github.com/cloudfoundry/docs-bosh/blob/master/content/cpi-api-v2-method/create-vm.md
+	// By BOSH CPI doc: https://github.com/cloudfoundry/docs-bosh/blob/main/content/cpi-api-v2-method/create-vm.md
 	// Need to cleanup the associated resource if creation fails.
 	if err := v.vmService.WaitForVMState(ctx, vm.Name, vmv1.VirtualMachineStateRunning, vmv1.ConditionTypeGuestEnvironmentSynced, metav1.ConditionTrue, time.Duration(v.timeout.VMStart)*time.Minute); err != nil {
 		v.cleanupAll(ctx, vm)
