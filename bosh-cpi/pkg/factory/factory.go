@@ -45,7 +45,7 @@ type Factory struct {
 }
 
 // CPI is the implementation of apiv1.CPI:
-// https://github.com/cloudfoundry/bosh-cpi-go/blob/master/apiv1/interfaces.go#L11
+// https://github.com/cloudfoundry/bosh-cpi-go/blob/main/apiv1/interfaces.go#L11
 // Its struct can be defined freely as needed, but the struct components must implement all required interfact methods.
 //
 //	Here CPI is defined in a way by grouping and delegating methods to different component.
