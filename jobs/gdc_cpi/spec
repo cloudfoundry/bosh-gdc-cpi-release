@@ -115,7 +115,7 @@ properties:
 
   gdch.timeout.snapshot_creation:
     description: "Timeout of snapshot creation in minutes"
-    default: 10
+    default: 15
 
   gdch.timeout.snapshot_deletion:
     description: "Timeout of snapshot deletion minutes"

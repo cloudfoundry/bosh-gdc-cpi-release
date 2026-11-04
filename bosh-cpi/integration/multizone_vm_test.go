@@ -50,18 +50,24 @@ func TestMultizoneVMAndDiskMethods(t *testing.T) {
 
 		testDiskWithVMMethods(vmID, t, *mzConfig)
 
-		// Always clean up at the end of tests suite
-		if len(vmID) > 0 {
+		// Always clean up at the end of tests suite.
+		// t.Cleanup executes in LIFO order: register DeleteStemcell before DeleteVM
+		// so the VM is deleted before the stemcell image it booted from.
+		if useStemcell && len(imageName) > 0 {
+			kubeClientForCleanup := kubeClient
+			imageToDelete := imageName
 			t.Cleanup(func() {
-				t.Log("Running cleanup: DeleteVM")
-				testDeleteVM(vmID, t, *mzConfig)
+				t.Log("Running cleanup: DeleteStemcell")
+				testDeleteStemcell(kubeClientForCleanup, imageToDelete, t)
 			})
 		}
 
-		if useStemcell && len(imageName) > 0 {
+		if len(vmID) > 0 {
+			cfg := *mzConfig
+			vmToDelete := vmID
 			t.Cleanup(func() {
-				t.Log("Running cleanup: DeleteStemcell")
-				testDeleteStemcell(kubeClient, imageName, t)
+				t.Log("Running cleanup: DeleteVM")
+				testDeleteVM(vmToDelete, t, cfg)
 			})
 		}
 	}

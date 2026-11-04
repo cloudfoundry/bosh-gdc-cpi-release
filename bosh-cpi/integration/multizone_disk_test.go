@@ -55,25 +55,32 @@ func TestMultizoneDiskMethods(t *testing.T) {
 			backupID = testSnapshotDisk(diskID, t, *mzConfig)
 		})
 
-		// Always clean up at the end of tests suite
-		if len(backupID) > 0 {
-			t.Cleanup(func() {
-				t.Log("Running cleanup: DeleteSnapshot")
-				testDeleteSnapshot(backupID, t, *mzConfig)
-			})
-		}
-
+		// Always clean up at the end of tests suite.
+		// t.Cleanup executes in LIFO order: register DeleteDisk -> DeleteVM -> DeleteSnapshot
+		// so teardown runs DeleteSnapshot first (releasing backup finalizers on the disk),
+		// then DeleteVM, and finally DeleteDisk.
+		cfg := *mzConfig
 		if len(diskID) > 0 {
+			diskToDelete := diskID
 			t.Cleanup(func() {
 				t.Log("Running cleanup: DeleteDisk")
-				testDeleteDisk(diskID, t, *mzConfig)
+				testDeleteDisk(diskToDelete, t, cfg)
 			})
 		}
 
 		if len(vmID) > 0 {
+			vmToDelete := vmID
 			t.Cleanup(func() {
 				t.Log("Running cleanup: DeleteVM")
-				testDeleteVM(vmID, t, *mzConfig)
+				testDeleteVM(vmToDelete, t, cfg)
+			})
+		}
+
+		if len(backupID) > 0 {
+			backupToDelete := backupID
+			t.Cleanup(func() {
+				t.Log("Running cleanup: DeleteSnapshot")
+				testDeleteSnapshot(backupToDelete, t, cfg)
 			})
 		}
 	}
