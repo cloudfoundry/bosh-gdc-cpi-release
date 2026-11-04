@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Build a BOSH release tarball for bosh-gdc-cpi.
+# Build a BOSH release tarball for bosh-gdch-cpi.
 #
 # Usage:
 #   scripts/create-release                      # dev release (timestamped)
@@ -22,12 +22,12 @@
 #   scripts/create-release X.Y.Z --commit-tag   # versioned release + git commit & tag vX.Y.Z
 #
 # Output contract:
-#   - Tarball is written to dev_releases/bosh-gdc-cpi/<name>.tgz (dev) or
-#     releases/bosh-gdc-cpi/<name>.tgz (versioned), matching BOSH directory conventions.
+#   - Tarball is written to dev_releases/bosh-gdch-cpi/<name>.tgz (dev) or
+#     releases/bosh-gdch-cpi/<name>.tgz (versioned), matching BOSH directory conventions.
 #   - Archive identity (release.MF name & version) and SHA-256 digest are verified
 #     via scripts/_release_artifact.py and written to <tarball>.sha256.
 #   - The absolute path to the tarball is printed to stdout as the last line:
-#       RELEASE_TGZ=/abs/path/to/bosh-gdc-cpi-X.tgz
+#       RELEASE_TGZ=/abs/path/to/bosh-gdch-cpi-X.tgz
 
 set -euo pipefail
 

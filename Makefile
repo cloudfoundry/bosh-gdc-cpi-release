@@ -4,14 +4,14 @@
 
 REPO_ROOT     := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 BIN_DIR       := $(REPO_ROOT)/bin
-SRC_DIR       := $(REPO_ROOT)/src/bosh-gdc-cpi
+SRC_DIR       := $(REPO_ROOT)/src/bosh-gdch-cpi
 TOOLS_DIR     := $(REPO_ROOT)/.tools
 TOOLS_BIN_DIR := $(TOOLS_DIR)/bin
 GO_DIR        := $(TOOLS_DIR)/go
 export PATH   := $(abspath $(GO_DIR)/bin):$(abspath $(TOOLS_BIN_DIR)):$(PATH)
 
-RELEASE_NAME  := bosh-gdc-cpi
-RELEASE_ROOT_TGZ_FIND := find $(REPO_ROOT) -maxdepth 1 \( -name 'bosh-gdc-cpi-*.tgz' -o -name 'bosh_gdc_cpi_release_*.tgz' -o -name 'bosh_gdch_cpi_release_*.tgz' \)
+RELEASE_NAME  := bosh-gdch-cpi
+RELEASE_ROOT_TGZ_FIND := find $(REPO_ROOT) -maxdepth 1 \( -name 'bosh-gdch-cpi-*.tgz' -o -name 'bosh-gdc-cpi-*.tgz' -o -name 'bosh_gdc_cpi_release_*.tgz' -o -name 'bosh_gdch_cpi_release_*.tgz' \)
 
 GOLANGCI_LINT_VERSION ?= v2.15.0
 
@@ -67,7 +67,7 @@ build-darwin: ensure-go
 	@echo "[INFO] Compiling CPI binary for Darwin ($$(go env GOHOSTARCH))..."
 	@cd $(REPO_ROOT) && CGO_ENABLED=0 GOOS=darwin go build $(GOFLAGS) -ldflags '$(LDFLAGS) -X main.Version=$(VERSION)' -o $(BIN_DIR)/cpi_darwin ./bosh-cpi/cmd
 
-# Prepare CPI binaries in src/bosh-gdc-cpi for BOSH packaging
+# Prepare CPI binaries in src/bosh-gdch-cpi for BOSH packaging
 release-binaries: ensure-go
 	@mkdir -p $(SRC_DIR)
 	@echo "[INFO] Preparing CPI binaries for BOSH packaging in $(SRC_DIR)..."
@@ -225,7 +225,7 @@ help:
 	@echo "  make build             - Compile CPI binaries for Linux and Darwin in bin/"
 	@echo "  make build-linux       - Compile Linux CPI binary (bin/cpi)"
 	@echo "  make build-darwin      - Compile Darwin CPI binary (bin/cpi_darwin)"
-	@echo "  make release-binaries  - Compile CPI binaries into src/bosh-gdc-cpi for BOSH release"
+	@echo "  make release-binaries  - Compile CPI binaries into src/bosh-gdch-cpi for BOSH release"
 	@echo "  make test              - Run Go and Python unit tests"
 	@echo "  make py-test           - Run Python SemVer and release artifact unit tests"
 	@echo "  make integration-test  - Run integration tests (use TEST_ARGS for flags/filters)"

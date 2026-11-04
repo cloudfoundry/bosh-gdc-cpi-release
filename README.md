@@ -40,9 +40,9 @@ For background on creating BOSH releases, see [Create a Release](https://bosh.io
 ├── .github/workflows  # GitHub Actions CI, integration test, release pipeline, and dashboard workflows
 ├── .final_builds      # BOSH final-build indices (job/package/license blobs on GitHub Release assets) used by bosh.io
 ├── config             # Configuration of the release (blobs, final release specs incl. read-only blobstore)
-├── jobs               # BOSH job definitions (gdc_cpi)
-├── packages           # BOSH package definitions (bosh-gdc-cpi)
-├── releases           # Committed BOSH final-release manifests (bosh-gdc-cpi-<VERSION>.yml, index.yml) used by bosh.io
+├── jobs               # BOSH job definitions (gdch_cpi)
+├── packages           # BOSH package definitions (bosh-gdch-cpi)
+├── releases           # Committed BOSH final-release manifests (bosh-gdch-cpi-<VERSION>.yml, index.yml) used by bosh.io
 ├── bosh-cpi           # Go source code for the CPI implementation and tests
 │   ├── cmd            # Main CPI executable entrypoint
 │   ├── pkg            # CPI packages (vm, disk, stemcell, auth, client, gdc, etc.)
@@ -109,13 +109,13 @@ make check
 
 Ensure the [BOSH CLI](https://bosh.io/docs/cli-v2-install/) is installed.
 
-To compile CPI binaries, create a versioned BOSH release tarball (`releases/bosh-gdc-cpi/bosh-gdc-cpi-<VERSION>.tgz`), verify `release.MF` identity via `scripts/_release_artifact.py`, and generate its `.sha256` checksum:
+To compile CPI binaries, create a versioned BOSH release tarball (`releases/bosh-gdch-cpi/bosh-gdch-cpi-<VERSION>.tgz`), verify `release.MF` identity via `scripts/_release_artifact.py`, and generate its `.sha256` checksum:
 
 ```bash
 make release VERSION=0.1.0
 ```
 
-To build a timestamped development tarball (`dev_releases/bosh-gdc-cpi/bosh-gdc-cpi-dev-<timestamp>.tgz`):
+To build a timestamped development tarball (`dev_releases/bosh-gdch-cpi/bosh-gdch-cpi-dev-<timestamp>.tgz`):
 
 ```bash
 make dev-release
@@ -195,7 +195,7 @@ The **`CFBOSH GDC release pipeline`** automates end-to-end BOSH CPI release pack
        | `concourse_wait_for` | `promote-candidate` \| `bosh-deployment` | `promote-candidate` | Target Concourse job to monitor before proceeding to Stage 4 (`promote-candidate` waits for the full Concourse pipeline). |
 - **Pipeline Stages**:
   1. **Authorize & Resolve SemVer**: Verifies maintainer authorization and derives the target SemVer version/tag (`vX.Y.Z` in `release` mode or `vX.Y.Z-dev.<sha>` in `snapshot` mode) directly from repository Git tags via `scripts/_release_tag.py` (with Stage `1b` immediately publishing a live `running` entry to the dashboard).
-  2. **Build Candidate CPI & Scan Vulnerabilities**: Compiles Linux and Darwin CPI binaries (`make release-binaries`), creates the BOSH CPI release archive (`scripts/create-release`), verifies `release.MF` identity (`name: bosh-gdc-cpi` and `version`) and SHA-256 digest via `scripts/_release_artifact.py`, runs `govulncheck` against the Linux CPI binary (failing the build if any finding has a published fix — see [Vulnerability Scanning](#5-vulnerability-scanning)), and uploads candidate artifacts to `gs://cfbosh-cicd/`.
+  2. **Build Candidate CPI & Scan Vulnerabilities**: Compiles Linux and Darwin CPI binaries (`make release-binaries`), creates the BOSH CPI release archive (`scripts/create-release`), verifies `release.MF` identity (`name: bosh-gdch-cpi` and `version`) and SHA-256 digest via `scripts/_release_artifact.py`, runs `govulncheck` against the Linux CPI binary (failing the build if any finding has a published fix — see [Vulnerability Scanning](#5-vulnerability-scanning)), and uploads candidate artifacts to `gs://cfbosh-cicd/`.
   3. **Run Concourse Deployment Pipeline (GKE)**: Connects to the GKE Concourse cluster (`cfbosh`), renders and updates the [`cfbosh-deployment`](https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment) pipeline (`ci/configure.sh`), checks the `bosh-cpi-releases` GCS resource, and triggers/watches the Concourse pipeline (`start-deployments` &rarr; `bosh-bootstrap` &rarr; `bosh-deployment` &rarr; `run-bats` / `cf-deployment` &rarr; `run-cats` &rarr; `pre-release-fan-in` &rarr; `promote-candidate`) via `ci/run-pipeline.sh`. Can be bypassed in `snapshot` mode by setting `skip_concourse: true` in case of underlying infrastructure issues.
   4. **Release CPI Artifact (GitHub Releases & bosh.io)**: In `release` mode (on `main`), publishes the verified CPI release artifacts, final-build blobs, and vulnerability report to GitHub Releases (creating the `vX.Y.Z` tag) and commits the `bosh.io` final-release metadata (`releases/`, `.final_builds/`). In `snapshot` mode, skips GitHub Release creation, git tagging, and `bosh.io` metadata commits.
   5. **Update Release Pipeline Dashboard**: Appends the run telemetry and stage statuses to `dashboard/data/runs.json`, generates the GitHub Actions job summary, and deploys the updated dashboard to GitHub Pages.
@@ -239,13 +239,13 @@ The release versioning and artifact verification architecture follows [Semantic 
      - **`Latest` Release Badge Resolution**: Marks a GitHub Release as `Latest` if and only if the tag has no pre-release suffix and its `(major, minor, patch)` tuple is greater than or equal to every existing final release tag in the repository. A backported patch on an older `release/X.Y` branch never steals the `Latest` badge from a newer minor or major release.
 
 3. **Deterministic Build & Archive Integrity Verification (`scripts/create-release` & `scripts/_release_artifact.py`)**:
-   - **Single Source of Truth for Release Name**: Both [`Makefile`](Makefile) (`make release-name-check`) and [`scripts/create-release`](scripts/create-release) read `name: bosh-gdc-cpi` directly from [`config/final.yml`](config/final.yml) so the archive filename, directory path (`dev_releases/bosh-gdc-cpi/` and `releases/bosh-gdc-cpi/`), and embedded `release.MF` cannot drift.
+   - **Single Source of Truth for Release Name**: Both [`Makefile`](Makefile) (`make release-name-check`) and [`scripts/create-release`](scripts/create-release) read `name: bosh-gdch-cpi` directly from [`config/final.yml`](config/final.yml) so the archive filename, directory path (`dev_releases/bosh-gdch-cpi/` and `releases/bosh-gdch-cpi/`), and embedded `release.MF` cannot drift.
    - **Compile-Time Version Injection**: [`Makefile`](Makefile) compiles both Linux (`cpi_binary_linux`) and Darwin (`cpi_binary_darwin`) CPI binaries with `-ldflags "-X main.Version=$(VERSION)"`.
-   - **BOSH Release Packaging**: [`scripts/create-release`](scripts/create-release) stages the compiled binaries, runs `bosh create-release --force --version "<VERSION>" --tarball "releases/bosh-gdc-cpi/bosh-gdc-cpi-<VERSION>.tgz"`, and writes the companion `bosh-gdc-cpi-<VERSION>.tgz.sha256` checksum file.
+   - **BOSH Release Packaging**: [`scripts/create-release`](scripts/create-release) stages the compiled binaries, runs `bosh create-release --force --version "<VERSION>" --tarball "releases/bosh-gdch-cpi/bosh-gdch-cpi-<VERSION>.tgz"`, and writes the companion `bosh-gdch-cpi-<VERSION>.tgz.sha256` checksum file.
    - **Manifest & Digest Inspection**: [`scripts/_release_artifact.py`](scripts/_release_artifact.py) (tested in [`scripts/_release_artifact_test.py`](scripts/_release_artifact_test.py)) inspects the `.tgz` archive in both Stage 2 (build) and Stage 4 (publish) to verify that:
      - `release.MF` is present inside the archive.
-     - `release.MF` declares `name: bosh-gdc-cpi` and `version: "<VERSION>"` matching the expected SemVer string.
-     - The archive's SHA-256 digest matches the `.sha256` checksum built in Stage 2, guaranteeing the published `bosh-gdc-cpi-<VERSION>.tgz` is byte-identical to the candidate build. (Concourse qualifies the `bosh_gdch_cpi_release_<VERSION>.tgz` compatibility build, which contains the same CPI binary under the legacy release/job names.)
+     - `release.MF` declares `name: bosh-gdch-cpi` and `version: "<VERSION>"` matching the expected SemVer string.
+     - The archive's SHA-256 digest matches the `.sha256` checksum built in Stage 2, guaranteeing the published `bosh-gdch-cpi-<VERSION>.tgz` is byte-identical to the candidate build (`bosh_gdch_cpi_release_<VERSION>.tgz` is an exact copy for the Concourse `bosh-cpi-releases` GCS resource).
 
 ### Artifacts Produced by the Release Pipeline
 
@@ -253,37 +253,37 @@ Each run of the `CFBOSH GDC release pipeline` produces and verifies the followin
 
 | Artifact | Location / Destination | Description |
 | :--- | :--- | :--- |
-| **`bosh-gdc-cpi-<VERSION>.tgz`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases),<br>[bosh.io](https://bosh.io/releases/github.com/cloudfoundry/bosh-gdc-cpi-release),<br>`gs://cfbosh-cicd/cpi_releases/` | Official SemVer BOSH CPI release tarball containing the `gdc_cpi` job, `bosh-gdc-cpi` package (Linux & Darwin binaries), and `release.MF` manifest. |
-| **`bosh-gdc-cpi-<VERSION>.tgz.sha256`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases),<br>`gs://cfbosh-cicd/cpi_releases/` | SHA-256 checksum file (`<sha256>  bosh-gdc-cpi-<VERSION>.tgz`) verified by `scripts/_release_artifact.py`. |
-| **`bosh_gdch_cpi_release_<VERSION>.tgz`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases),<br>`gs://cfbosh-cicd/cpi_releases/` | Same CPI binary packaged under the **legacy BOSH release/job names** (`bosh-gdch-cpi` / `gdch_cpi`) for existing manifests that reference those names, and consumed by the Concourse `bosh-cpi-releases` GCS resource (`cpi_releases/bosh_gdch_cpi_release_(.*).tgz`). BOSH matches on the release/job *names* inside the tarball, not the file name: **new deployments should use `bosh-gdc-cpi-<VERSION>.tgz`** (`bosh-gdc-cpi` / `gdc_cpi`). |
+| **`bosh-gdch-cpi-<VERSION>.tgz`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases),<br>[bosh.io](https://bosh.io/releases/github.com/cloudfoundry/bosh-gdc-cpi-release),<br>`gs://cfbosh-cicd/cpi_releases/` | Official SemVer BOSH CPI release tarball containing the `gdch_cpi` job, `bosh-gdch-cpi` package (Linux & Darwin binaries), and `release.MF` manifest. |
+| **`bosh-gdch-cpi-<VERSION>.tgz.sha256`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases),<br>`gs://cfbosh-cicd/cpi_releases/` | SHA-256 checksum file (`<sha256>  bosh-gdch-cpi-<VERSION>.tgz`) verified by `scripts/_release_artifact.py`. |
+| **`bosh_gdch_cpi_release_<VERSION>.tgz`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases),<br>`gs://cfbosh-cicd/cpi_releases/` | Copy of `bosh-gdch-cpi-<VERSION>.tgz` named for the Concourse `bosh-cpi-releases` GCS resource (`cpi_releases/bosh_gdch_cpi_release_(.*).tgz`). |
 | **`vulnerability-report-<VERSION>.md`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases),<br>`gs://cfbosh-cicd/vulnerability-reports/cpi/<VERSION>.md` | Markdown vulnerability scan report (`govulncheck -mode=binary` on the Linux CPI binary, rendered by `scripts/_vuln_report.py`): per-module findings with linked/fixed versions and CVE aliases, split into *fixable* (blocks the release) and *no upstream fix*. See [Vulnerability Scanning](#5-vulnerability-scanning). |
-| **`job-gdc_cpi-<fingerprint>.tgz`**,<br>**`package-bosh-gdc-cpi-<fingerprint>.tgz`**,<br>**`license-<fingerprint>.tgz`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases) (`v<VERSION>` assets) | BOSH final-build blobs referenced by the committed `.final_builds/**/index.yml` (`blobstore_id: v<VERSION>/<asset>`). They make the release rebuildable by [bosh.io](https://bosh.io/releases) from metadata alone (see below). |
-| **`releases/bosh-gdc-cpi/bosh-gdc-cpi-<VERSION>.yml`**,<br>**`releases/bosh-gdc-cpi/index.yml`**,<br>**`.final_builds/**/index.yml`** | Committed to `main` (`chore(release): cut bosh-gdc-cpi v<VERSION>`) | BOSH final-release metadata generated by `bosh finalize-release` ([`scripts/_final_release.py`](scripts/_final_release.py)). |
+| **`job-gdch_cpi-<fingerprint>.tgz`**,<br>**`package-bosh-gdch-cpi-<fingerprint>.tgz`**,<br>**`license-<fingerprint>.tgz`** | [GitHub Releases](https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases) (`v<VERSION>` assets) | BOSH final-build blobs referenced by the committed `.final_builds/**/index.yml` (`blobstore_id: v<VERSION>/<asset>`). They make the release rebuildable by [bosh.io](https://bosh.io/releases) from metadata alone (see below). |
+| **`releases/bosh-gdch-cpi/bosh-gdch-cpi-<VERSION>.yml`**,<br>**`releases/bosh-gdch-cpi/index.yml`**,<br>**`.final_builds/**/index.yml`** | Committed to `main` (`chore(release): cut bosh-gdch-cpi v<VERSION>`) | BOSH final-release metadata generated by `bosh finalize-release` ([`scripts/_final_release.py`](scripts/_final_release.py)). |
 | **Concourse Deployment Logs** | `gs://cfbosh-cicd/cicd-deployment-logs/log_<TIMESTAMP>.md` | Execution log and build ID tracking artifact generated by the Concourse `cfbosh-deployment` pipeline. |
 
 #### bosh.io Final-Release Metadata (`releases/` and `.final_builds/`)
 
-[bosh.io](https://bosh.io/releases) ([`cloudfoundry/bosh-io-releases`](https://github.com/cloudfoundry/bosh-io-releases)) does **not** look at GitHub Releases. It watches the `releases/` directory on the default branch and rebuilds every final release with `bosh create-release releases/bosh-gdc-cpi/bosh-gdc-cpi-<VERSION>.yml`, downloading each job/package/license blob listed in `.final_builds/**/index.yml` from the blobstore declared in [`config/final.yml`](config/final.yml). This repository therefore:
+[bosh.io](https://bosh.io/releases) ([`cloudfoundry/bosh-io-releases`](https://github.com/cloudfoundry/bosh-io-releases)) does **not** look at GitHub Releases. It watches the `releases/` directory on the default branch and rebuilds every final release with `bosh create-release releases/bosh-gdch-cpi/bosh-gdch-cpi-<VERSION>.yml`, downloading each job/package/license blob listed in `.final_builds/**/index.yml` from the blobstore declared in [`config/final.yml`](config/final.yml). This repository therefore:
 
 - Declares a **read-only, anonymous blobstore** in [`config/final.yml`](config/final.yml) (bosh CLI `s3` provider, `credentials_source: none`) that resolves `blobstore_id: v<VERSION>/<asset>` to the public GitHub Release asset `https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases/download/v<VERSION>/<asset>`. No bucket or credentials are required to rebuild a release.
-- In `release` mode, Stage 4 (`scripts/release-cpi.sh --stage publish`) runs [`scripts/_final_release.py finalize`](scripts/_final_release.py) on the verified tarball (`bosh finalize-release` against a throwaway local blobstore, then rewrites the fresh `blobstore_id`s to `v<VERSION>/<kind>-<name>-<fingerprint>.tgz`), uploads those blobs as assets of the `v<VERSION>` GitHub Release, runs [`scripts/_final_release.py verify`](scripts/_final_release.py) (a pristine `bosh create-release` from the manifest with an empty blob cache, exactly what bosh.io does), and finally commits `releases/` + `.final_builds/` to `main` as `chore(release): cut bosh-gdc-cpi v<VERSION>`.
+- In `release` mode, Stage 4 (`scripts/release-cpi.sh --stage publish`) runs [`scripts/_final_release.py finalize`](scripts/_final_release.py) on the verified tarball (`bosh finalize-release` against a throwaway local blobstore, then rewrites the fresh `blobstore_id`s to `v<VERSION>/<kind>-<name>-<fingerprint>.tgz`), uploads those blobs as assets of the `v<VERSION>` GitHub Release, runs [`scripts/_final_release.py verify`](scripts/_final_release.py) (a pristine `bosh create-release` from the manifest with an empty blob cache, exactly what bosh.io does), and finally commits `releases/` + `.final_builds/` to `main` as `chore(release): cut bosh-gdch-cpi v<VERSION>`.
 - Keeps `releases/**/*.yml` and `.final_builds/` tracked in git (only the built `*.tgz` / `*.sha256` / reports next to them are ignored); `make release-clean` never deletes them.
 
 To check a published version locally from a fresh clone (no credentials, no `src/` binaries needed):
 
 ```bash
-bosh create-release releases/bosh-gdc-cpi/bosh-gdc-cpi-<VERSION>.yml --tarball /tmp/bosh-gdc-cpi-<VERSION>.tgz
+bosh create-release releases/bosh-gdch-cpi/bosh-gdch-cpi-<VERSION>.yml --tarball /tmp/bosh-gdch-cpi-<VERSION>.tgz
 # or equivalently, with an empty blob cache:
-python3 scripts/_final_release.py verify --version <VERSION> --tarball /tmp/bosh-gdc-cpi-<VERSION>.tgz
+python3 scripts/_final_release.py verify --version <VERSION> --tarball /tmp/bosh-gdch-cpi-<VERSION>.tgz
 ```
 
 Every GitHub Release also includes a ready-to-paste **BOSH deployment manifest snippet** in the release notes, followed by an auto-generated **What's Changed** section (see [Release Notes](#release-notes) below):
 
 ```yaml
 releases:
-  - name: bosh-gdc-cpi
+  - name: bosh-gdch-cpi
     version: "<VERSION>"
-    url: https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases/download/v<VERSION>/bosh-gdc-cpi-<VERSION>.tgz
+    url: https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases/download/v<VERSION>/bosh-gdch-cpi-<VERSION>.tgz
     sha1: sha256:<SHA256>
 ```
 
@@ -315,7 +315,7 @@ Because the PR list *is* the changelog, the quality of the release notes depends
 
 - **Write the PR title as the changelog line.** Use the [Conventional Commits](https://www.conventionalcommits.org/) form already used in this repository (`feat(vm): …`, `fix(disk): …`, `ci(github): …`, `docs: …`) and describe the user-visible outcome, not the implementation (`fix(disk): retry snapshot when backup is still provisioning`, not `fix bug`). The title is copied verbatim into the release.
 - **Label the PR** with one of the labels above so it lands in the right section; unlabelled PRs fall under *Other Changes*. Use `skip-changelog` for pure noise (typo fixes, dashboard data refreshes, revert-of-unreleased-change) that should not appear in the notes.
-- **Merge via Pull Request.** Direct pushes to `main` are not PRs and therefore never appear in *What's Changed* (they are still covered by the *Full Changelog* compare link). The only expected direct commits are the automated `chore(release): cut bosh-gdc-cpi vX.Y.Z` metadata commits.
+- **Merge via Pull Request.** Direct pushes to `main` are not PRs and therefore never appear in *What's Changed* (they are still covered by the *Full Changelog* compare link). The only expected direct commits are the automated `chore(release): cut bosh-gdch-cpi vX.Y.Z` metadata commits.
 - **Call out breaking changes and operator actions in the PR description** (a `BREAKING CHANGE:` paragraph or a short *Upgrade notes* section). After the pipeline publishes the release, a maintainer can add such notes at the top of the GitHub Release body (`gh release edit vX.Y.Z --notes-file …`). Note that re-running the publish stage for the same version regenerates the whole body, so re-apply manual additions afterwards.
 - **One logical change per PR.** Squash fix-ups before merging; a PR that mixes a feature and an unrelated refactor produces a misleading changelog entry.
 
