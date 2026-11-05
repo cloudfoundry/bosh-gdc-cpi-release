@@ -156,7 +156,7 @@ should_skip_non_code_changes() {
     return 1
   fi
 
-  local non_code_regex='^(\.gitignore|\.golangci\.yaml|OWNERS.*|CODEOWNERS|VERSION|LICENSE.*|NOTICE.*|Makefile|.*\.md|docs/.*|\.github/.*|dashboard/.*|scripts/ci-common\.sh|scripts/create-release|scripts/release-cpi\.sh|scripts/update-dashboard\.sh|scripts/_release_.*\.py|ci/.*)$'
+  local non_code_regex='^(\.gitignore|\.golangci\.yaml|OWNERS.*|CODEOWNERS|VERSION|LICENSE.*|NOTICE.*|Makefile|.*\.md|docs/.*|\.github/.*|dashboard/.*|scripts/ci-common\.sh|scripts/create-release|scripts/release-cpi\.sh|scripts/update-dashboard\.sh|releases/.*|\.final_builds/.*|scripts/_release_.*\.py|scripts/_final_release.*\.py|scripts/_vuln_report.*\.py|ci/.*)$'
   local pr_head_sha=""
   if [[ -f "${GITHUB_EVENT_PATH:-}" ]]; then
     pr_head_sha=$(jq -r '.pull_request.head.sha // empty' "${GITHUB_EVENT_PATH}")
@@ -430,7 +430,7 @@ check_ci_preconditions() {
       echo "Pull request author '${pr_user}' is a trusted bot; running the integration test automatically."
       # The secret value itself is only injected into the test step; the
       # preconditions step receives HAS_GDC_CPI_CONFIG (true/false) instead.
-      if [[ "${HAS_GDC_CPI_CONFIG:-}" == "false" || ( -z "${HAS_GDC_CPI_CONFIG:-}" && -z "${GDC_CPI_CONFIG:-}" ) ]]; then
+      if [[ "${HAS_GDC_CPI_CONFIG:-}" == "false" || (-z "${HAS_GDC_CPI_CONFIG:-}" && -z "${GDC_CPI_CONFIG:-}") ]]; then
         echo "::error::GDC_CPI_CONFIG is empty. Workflows triggered by ${pr_user} only receive Dependabot secrets, not Actions/environment secrets: add GDC_CPI_CONFIG under Settings > Secrets and variables > Dependabot."
         exit 1
       fi
@@ -754,4 +754,85 @@ setup_gcp_sa_key() {
     echo "::error::GCP service account key at ${key_file} is invalid JSON or missing required fields (.client_email, .private_key, .project_id)."
     exit 1
   fi
+}
+
+# push_metadata_to_branch pushes a release metadata commit (releases/, .final_builds/,
+# or dashboard/data/runs.json) directly to the target branch (e.g. main) after strictly
+# verifying that only allowed metadata paths are modified relative to origin/<branch>.
+# When RELEASE_METADATA_DEPLOY_KEY is set, it pushes over SSH using the repository
+# deploy key (which is permitted by the 'main' ruleset's DeployKey bypass actor).
+push_metadata_to_branch() {
+  local branch="${1:-main}"
+  local allowed_regex='^(\.final_builds/.*|releases/.*|dashboard/data/runs\.json)$'
+  local repo_slug="${GITHUB_REPOSITORY:-cloudfoundry/bosh-gdc-cpi-release}"
+
+  git fetch --no-tags origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" >/dev/null 2>&1 || true
+
+  local changed_files disallowed_files
+  changed_files="$(git diff --name-only "origin/${branch}..HEAD" 2>/dev/null || true)"
+  if [[ -z "${changed_files}" ]]; then
+    echo "[INFO] No new metadata commits to push to ${branch}."
+    return 0
+  fi
+
+  disallowed_files="$(printf '%s\n' "${changed_files}" | grep -vE "${allowed_regex}" || true)"
+  if [[ -n "${disallowed_files}" ]]; then
+    echo "[ERROR] Refusing direct push to ${branch}: commit modifies paths outside (.final_builds/, releases/, dashboard/data/runs.json):" >&2
+    printf '  - %s\n' ${disallowed_files} >&2
+    return 1
+  fi
+
+  local key_file=""
+  if [[ -n "${RELEASE_METADATA_DEPLOY_KEY:-}" ]]; then
+    local xtrace_was_set=false
+    if [[ "$-" == *x* ]]; then
+      xtrace_was_set=true
+      set +x
+    fi
+    key_file="$(mktemp /tmp/release-metadata-key-XXXXXX)"
+    chmod 0600 "${key_file}"
+    printf '%s\n' "${RELEASE_METADATA_DEPLOY_KEY}" >"${key_file}"
+    if [[ "${xtrace_was_set}" == "true" ]]; then
+      set -x
+    fi
+  fi
+
+  local pushed="false" attempt
+  for attempt in 1 2 3; do
+    if [[ -n "${key_file}" ]]; then
+      if GIT_SSH_COMMAND="ssh -i ${key_file} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+        git push "git@github.com:${repo_slug}.git" "HEAD:refs/heads/${branch}"; then
+        pushed="true"
+        break
+      fi
+    else
+      if git push origin "HEAD:refs/heads/${branch}"; then
+        pushed="true"
+        break
+      fi
+    fi
+
+    echo "[WARN] Push to ${branch} rejected (attempt ${attempt}/3); rebasing onto latest ${branch}..."
+    git fetch --no-tags origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" &&
+      git rebase "origin/${branch}" || {
+      git rebase --abort || true
+      break
+    }
+    changed_files="$(git diff --name-only "origin/${branch}..HEAD" 2>/dev/null || true)"
+    disallowed_files="$(printf '%s\n' "${changed_files}" | grep -vE "${allowed_regex}" || true)"
+    if [[ -n "${disallowed_files}" ]]; then
+      echo "[ERROR] Refusing direct push after rebase: non-metadata paths detected." >&2
+      break
+    fi
+  done
+
+  if [[ -n "${key_file}" ]]; then
+    rm -f "${key_file}"
+  fi
+
+  if [[ "${pushed}" == "true" ]]; then
+    echo "[INFO] Pushed release metadata commit ($(git rev-parse --short HEAD)) directly to ${branch}."
+    return 0
+  fi
+  return 1
 }
