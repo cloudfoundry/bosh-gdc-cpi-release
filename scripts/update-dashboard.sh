@@ -350,19 +350,11 @@ if [[ "${PUSH_DASHBOARD_DATA:-true}" == "true" && "${GITHUB_ACTIONS:-false}" == 
   if ! git diff --cached --quiet; then
     git commit -q -m "chore(dashboard): record release pipeline run ${ASSIGNED_RUN_NUM} (${RELEASE_TAG}) [skip ci]" \
       -m "Signed-off-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
-    pushed="false"
-    for attempt in 1 2 3; do
-      if git push origin "HEAD:refs/heads/${TARGET_BRANCH}"; then
-        pushed="true"
-        break
-      fi
-      echo "[WARN] Push to ${TARGET_BRANCH} rejected (attempt ${attempt}/3); rebasing onto latest ${TARGET_BRANCH}..."
-      git fetch origin "${TARGET_BRANCH}" && git rebase "origin/${TARGET_BRANCH}" || {
-        git rebase --abort || true
-        break
-      }
-    done
-    if [[ "${pushed}" != "true" ]]; then
+    if ! declare -F push_metadata_to_branch >/dev/null 2>&1; then
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/ci-common.sh"
+    fi
+    if ! push_metadata_to_branch "${TARGET_BRANCH}"; then
       echo "[WARN] Could not push dashboard update to ${TARGET_BRANCH}; the deployed Pages data still contains this run."
     fi
   fi

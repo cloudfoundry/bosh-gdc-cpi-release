@@ -403,21 +403,27 @@ commit_final_release_metadata() {
   echo "[INFO] Committed final release metadata for ${tag} ($(git rev-parse --short HEAD))."
 
   local branch="${FINAL_RELEASE_METADATA_BRANCH}"
-  local attempt
-  for attempt in 1 2 3; do
-    if git push origin "HEAD:refs/heads/${branch}"; then
-      echo "[INFO] Pushed final release metadata for ${tag} to ${branch}."
-      return 0
+  if ! declare -F push_metadata_to_branch >/dev/null 2>&1; then
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/ci-common.sh"
+  fi
+  if push_metadata_to_branch "${branch}"; then
+    return 0
+  fi
+
+  local pr_branch="chore/release-metadata-${tag}"
+  echo "[WARN] Direct push to ${branch} failed; falling back to ${pr_branch}..."
+  if git push --force origin "HEAD:refs/heads/${pr_branch}"; then
+    local repo_slug="${GITHUB_REPOSITORY:-cloudfoundry/bosh-gdc-cpi-release}"
+    if ! gh pr view "${pr_branch}" --repo "${repo_slug}" >/dev/null 2>&1; then
+      gh pr create --repo "${repo_slug}" --base "${branch}" --head "${pr_branch}" \
+        --title "chore(release): cut ${tag} [skip-integ]" \
+        --body "Automated bosh.io final-release metadata (\`releases/\`, \`.final_builds/\`) for \`${tag}\`." || true
     fi
-    echo "[WARN] Push to ${branch} rejected (attempt ${attempt}/3); rebasing onto latest ${branch}..."
-    git fetch origin "${branch}"
-    git rebase "origin/${branch}" || {
-      git rebase --abort || true
-      break
-    }
-  done
-  echo "[ERROR] Could not push final release metadata for ${tag} to ${branch}. Push the commit manually so bosh.io can import the release." >&2
-  return 1
+    return 0
+  fi
+  echo "[WARN] Could not push final release metadata for ${tag} to ${branch} or ${pr_branch}; push manually so bosh.io can import the release." >&2
+  return 0
 }
 
 publish_release_stage() {

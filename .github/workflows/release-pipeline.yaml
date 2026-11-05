@@ -362,6 +362,7 @@ jobs:
           IS_LATEST: ${{ needs.prepare.outputs.latest }}
           # Final-release metadata (releases/, .final_builds/) is committed back to the branch being released
           FINAL_RELEASE_METADATA_BRANCH: ${{ needs.prepare.outputs.target_branch }}
+          RELEASE_METADATA_DEPLOY_KEY: ${{ secrets.RELEASE_METADATA_DEPLOY_KEY }}
         run: |
           set -euo pipefail
           source ./scripts/ci-common.sh
@@ -409,6 +410,7 @@ jobs:
       - name: Update Dashboard Data & Step Summary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_METADATA_DEPLOY_KEY: ${{ secrets.RELEASE_METADATA_DEPLOY_KEY }}
           PIPELINE_START_EPOCH: ${{ needs.prepare.outputs.start_epoch }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           RELEASE_MODE: ${{ needs.prepare.outputs.release_mode }}

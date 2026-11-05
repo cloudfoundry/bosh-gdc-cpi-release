@@ -43,12 +43,14 @@ rewriting against fixture data.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -59,6 +61,7 @@ RELEASE_DIR_FILES = ("config", "jobs", "packages", "LICENSE", "NOTICE", RELEASES
 _NAME_RE = re.compile(r"^(?:name|final_name):\s*(\S+)\s*$", re.MULTILINE)
 _BUILD_KEY_RE = re.compile(r"^  ([0-9a-f]+):\s*$")
 _BLOB_ID_RE = re.compile(r"^(    blobstore_id:\s*)(\S+)\s*$")
+_SHA1_RE = re.compile(r"^    sha1:\s*(\S+)\s*$")
 
 
 def release_name(repo_root: Path) -> str:
@@ -146,6 +149,54 @@ def rewrite_indices(repo_root: Path, version: str, local_blobstore: Path, assets
     return staged
 
 
+def seed_existing_blobs(repo_root: Path, tarball: Path, local_blobstore: Path) -> list[str]:
+    """Pre-populate the throwaway local blobstore with already-finalized blobs carried in tarball.
+
+    When `bosh finalize-release` encounters a component fingerprint that already exists in
+    `.final_builds/<kind>/index.yml` from an earlier release (e.g. an unchanged LICENSE or job),
+    it verifies the existing entry by reading `<blobstore_path>/<blobstore_id>` and checking its
+    digest before reusing it. Because `bosh create-release` already embedded those exact `.tgz`
+    blobs inside `tarball`, seeding them by digest into `local_blobstore` under their existing
+    `v<prev>/<asset>` paths lets `bosh finalize-release` succeed offline on a clean runner while
+    keeping earlier releases' `blobstore_id` entries untouched.
+    """
+    blobs_by_sha: dict[str, bytes] = {}
+    with tarfile.open(tarball, "r:gz") as archive:
+        for member in archive.getmembers():
+            if not member.isfile() or not member.name.endswith(".tgz"):
+                continue
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                continue
+            data = extracted.read()
+            digest = f"sha256:{hashlib.sha256(data).hexdigest()}"
+            blobs_by_sha[digest] = data
+
+    seeded: list[str] = []
+    for _, _, index_path in index_files(repo_root):
+        blob_id = ""
+        sha1 = ""
+        for line in index_path.read_text(encoding="utf-8").splitlines():
+            if _BUILD_KEY_RE.match(line):
+                blob_id = ""
+                sha1 = ""
+                continue
+            blob_match = _BLOB_ID_RE.match(line)
+            if blob_match:
+                blob_id = blob_match.group(2)
+            sha_match = _SHA1_RE.match(line)
+            if sha_match:
+                sha1 = sha_match.group(1)
+            if blob_id and sha1 and "/" in blob_id and sha1 in blobs_by_sha:
+                dest = local_blobstore / blob_id
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(blobs_by_sha[sha1])
+                seeded.append(blob_id)
+                blob_id = ""
+                sha1 = ""
+    return seeded
+
+
 def finalize(repo_root: Path, tarball: Path, version: str, assets_dir: Path, bosh: str = "bosh") -> dict:
     """Run `bosh finalize-release` with a throwaway local blobstore, then rewrite the indices."""
     final_yml = repo_root / "config" / "final.yml"
@@ -154,6 +205,7 @@ def finalize(repo_root: Path, tarball: Path, version: str, assets_dir: Path, bos
     with tempfile.TemporaryDirectory(prefix="final-release-blobstore-") as tmp:
         local_blobstore = Path(tmp) / "blobstore"
         local_blobstore.mkdir()
+        seed_existing_blobs(repo_root, tarball, local_blobstore)
         try:
             final_yml.write_text(
                 f"name: {name}\nblobstore:\n  provider: local\n  options:\n    blobstore_path: {local_blobstore}\n",

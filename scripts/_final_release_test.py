@@ -17,7 +17,18 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from _final_release import asset_name, index_files, release_name, rewrite_index_text, rewrite_indices
+import hashlib
+import io
+import tarfile
+
+from _final_release import (
+    asset_name,
+    index_files,
+    release_name,
+    rewrite_index_text,
+    rewrite_indices,
+    seed_existing_blobs,
+)
 
 PKG_INDEX = """builds:
   7f659a1354a0817bf9289c96d7238dc2d59aaa13260553bdf07d18f0d75037de:
@@ -108,6 +119,40 @@ class RewriteIndicesTest(unittest.TestCase):
             (lic_dir / "index.yml").write_text(LICENSE_INDEX)
             with self.assertRaises(FileNotFoundError):
                 rewrite_indices(root, "0.1.0", root / "empty", root / "assets")
+
+
+class SeedExistingBlobsTest(unittest.TestCase):
+    def test_seeds_previously_finalized_blobs_from_release_tarball(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lic_bytes = b"apache-2.0-license-tarball-bytes"
+            lic_sha = f"sha256:{hashlib.sha256(lic_bytes).hexdigest()}"
+            lic_fp = "d0df1a42b66dd34aea649dc14f8e0969a8becc3b178433ef1e306221b718a517"
+            lic_blob_id = f"v0.1.0/license-{lic_fp}.tgz"
+
+            lic_dir = root / ".final_builds" / "license"
+            lic_dir.mkdir(parents=True)
+            (lic_dir / "index.yml").write_text(
+                f"builds:\n"
+                f"  {lic_fp}:\n"
+                f"    version: {lic_fp}\n"
+                f"    blobstore_id: {lic_blob_id}\n"
+                f"    sha1: {lic_sha}\n"
+                f'format-version: "2"\n'
+            )
+
+            tarball = root / "bosh-gdch-cpi-0.1.1.tgz"
+            with tarfile.open(tarball, "w:gz") as tf:
+                info = tarfile.TarInfo("license.tgz")
+                info.size = len(lic_bytes)
+                tf.addfile(info, io.BytesIO(lic_bytes))
+
+            blobstore = root / "blobstore"
+            blobstore.mkdir()
+            seeded = seed_existing_blobs(root, tarball, blobstore)
+
+            self.assertEqual(seeded, [lic_blob_id])
+            self.assertEqual((blobstore / lic_blob_id).read_bytes(), lic_bytes)
 
 
 if __name__ == "__main__":
