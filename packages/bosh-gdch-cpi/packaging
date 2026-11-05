@@ -5,10 +5,10 @@
 set -e
 
 # set directories
-BOSH_INSTALL_TARGET=${BOSH_INSTALL_TARGET:-/var/vcap/packages/bosh-gdc-cpi}
+BOSH_INSTALL_TARGET=${BOSH_INSTALL_TARGET:-/var/vcap/packages/bosh-gdch-cpi}
 
 # create bin directory if not existed
 mkdir -p ${BOSH_INSTALL_TARGET}/bin
 
 platform=$(uname | tr '[:upper:]' '[:lower:]')
-cp bosh-gdc-cpi/cpi_binary_${platform} ${BOSH_INSTALL_TARGET}/bin/cpi_${platform}
+cp bosh-gdch-cpi/cpi_binary_${platform} ${BOSH_INSTALL_TARGET}/bin/cpi_${platform}

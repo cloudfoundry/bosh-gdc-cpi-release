@@ -17,7 +17,7 @@ set -euo pipefail
 
 dir="$(dirname "$(readlink -f "$0")")"
 repo_root="$(cd "$dir/.." && pwd)"
-src_dir="$repo_root/src/bosh-gdc-cpi"
+src_dir="$repo_root/src/bosh-gdch-cpi"
 
 make -C "$repo_root" release-binaries
 

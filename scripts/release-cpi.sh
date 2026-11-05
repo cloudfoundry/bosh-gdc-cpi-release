@@ -229,7 +229,7 @@ resolve_version() {
 generate_vuln_report() {
   local version="$1"
   local report_path="$2"
-  local binary_path="${REPO_ROOT}/src/bosh-gdc-cpi/cpi_binary_linux"
+  local binary_path="${REPO_ROOT}/src/bosh-gdch-cpi/cpi_binary_linux"
 
   if [[ ! -f "${binary_path}" ]]; then
     make release-binaries VERSION="${version}"
@@ -274,42 +274,13 @@ generate_vuln_report() {
 build_concourse_tarball() {
   local version="$1"
   local concourse_tarball="$2"
-  local stage_dir="${TMP_DIR}/concourse-bosh-release"
+  local semver_tarball="${REPO_ROOT}/releases/bosh-gdch-cpi/bosh-gdch-cpi-${version}.tgz"
 
-  echo "[INFO] Building Concourse-compatible CPI release tarball (release: bosh-gdch-cpi, job: gdch_cpi, version: ${version})..."
-  rm -rf "${stage_dir}"
-  mkdir -p "${stage_dir}/config" \
-    "${stage_dir}/jobs/gdch_cpi/templates" \
-    "${stage_dir}/packages/bosh-gdch-cpi" \
-    "${stage_dir}/src/bosh-gdch-cpi"
-
-  printf -- '---\nname: bosh-gdch-cpi\n' >"${stage_dir}/config/final.yml"
-  cp "${REPO_ROOT}/config/blobs.yml" "${stage_dir}/config/blobs.yml"
-  if [[ -f "${REPO_ROOT}/LICENSE" ]]; then
-    cp "${REPO_ROOT}/LICENSE" "${stage_dir}/LICENSE"
+  echo "[INFO] Preparing Concourse-compatible CPI release tarball (release: bosh-gdch-cpi, job: gdch_cpi, version: ${version})..."
+  if [[ ! -f "${semver_tarball}" ]]; then
+    "${SCRIPT_DIR}/create-release" "${version}"
   fi
-
-  cp "${REPO_ROOT}/jobs/gdc_cpi/monit" "${stage_dir}/jobs/gdch_cpi/monit"
-  cp "${REPO_ROOT}/jobs/gdc_cpi/templates/cpi_config.json.erb" "${stage_dir}/jobs/gdch_cpi/templates/cpi_config.json.erb"
-  sed -e 's/gdc_cpi/gdch_cpi/g' -e 's/bosh-gdc-cpi/bosh-gdch-cpi/g' \
-    "${REPO_ROOT}/jobs/gdc_cpi/spec" >"${stage_dir}/jobs/gdch_cpi/spec"
-  sed -e 's/gdc_cpi/gdch_cpi/g' -e 's/bosh-gdc-cpi/bosh-gdch-cpi/g' \
-    "${REPO_ROOT}/jobs/gdc_cpi/templates/cpi.erb" >"${stage_dir}/jobs/gdch_cpi/templates/cpi.erb"
-  chmod +x "${stage_dir}/jobs/gdch_cpi/templates/cpi.erb"
-
-  sed 's/bosh-gdc-cpi/bosh-gdch-cpi/g' \
-    "${REPO_ROOT}/packages/bosh-gdc-cpi/spec" >"${stage_dir}/packages/bosh-gdch-cpi/spec"
-  sed 's/bosh-gdc-cpi/bosh-gdch-cpi/g' \
-    "${REPO_ROOT}/packages/bosh-gdc-cpi/packaging" >"${stage_dir}/packages/bosh-gdch-cpi/packaging"
-  chmod +x "${stage_dir}/packages/bosh-gdch-cpi/packaging"
-
-  cp "${REPO_ROOT}/src/bosh-gdc-cpi/"* "${stage_dir}/src/bosh-gdch-cpi/"
-
-  bosh create-release --force \
-    --dir="${stage_dir}" \
-    --name="bosh-gdch-cpi" \
-    --version="${version}" \
-    --tarball="${concourse_tarball}"
+  cp -f "${semver_tarball}" "${concourse_tarball}"
 
   python3 "${SCRIPT_DIR}/_release_artifact.py" "${concourse_tarball}" \
     --expected-name "bosh-gdch-cpi" \
@@ -329,14 +300,14 @@ build_candidate_stage() {
   echo "[INFO] Building BOSH CPI release tarball for version ${version}..."
   "${SCRIPT_DIR}/create-release" "${version}"
 
-  local release_dir="${REPO_ROOT}/releases/bosh-gdc-cpi"
-  local semver_tarball="${release_dir}/bosh-gdc-cpi-${version}.tgz"
+  local release_dir="${REPO_ROOT}/releases/bosh-gdch-cpi"
+  local semver_tarball="${release_dir}/bosh-gdch-cpi-${version}.tgz"
   local semver_sha256_file="${semver_tarball}.sha256"
   local concourse_tarball="${release_dir}/bosh_gdch_cpi_release_${version}.tgz"
   local vuln_report="${release_dir}/vulnerability-report-${version}.md"
 
   # Maintain Concourse GCS resource compatibility: bosh-deployment on Concourse expects
-  # release.MF inside bosh_gdch_cpi_release_<version>.tgz to have name: bosh-gdch-cpi and job: gdch_cpi.
+  # bosh_gdch_cpi_release_<version>.tgz with release.MF name: bosh-gdch-cpi and job: gdch_cpi.
   build_concourse_tarball "${version}" "${concourse_tarball}"
 
   # Verify archive integrity and export GDC_CPI_RELEASE_* env vars
@@ -355,8 +326,8 @@ build_candidate_stage() {
     echo "[INFO] Uploading candidate CPI artifacts to ${BETA_GCS_BUCKET}/cpi_releases/..."
     gcloud storage cp "${concourse_tarball}" "${BETA_GCS_BUCKET}/cpi_releases/bosh_gdch_cpi_release_${version}.tgz"
     gcloud storage cp "${concourse_tarball}" "${BETA_GCS_BUCKET}/cpi_releases/bosh_gdch_cpi_release_${concourse_ts_version}.tgz"
-    gcloud storage cp "${semver_tarball}" "${BETA_GCS_BUCKET}/cpi_releases/bosh-gdc-cpi-${version}.tgz"
-    gcloud storage cp "${semver_sha256_file}" "${BETA_GCS_BUCKET}/cpi_releases/bosh-gdc-cpi-${version}.tgz.sha256"
+    gcloud storage cp "${semver_tarball}" "${BETA_GCS_BUCKET}/cpi_releases/bosh-gdch-cpi-${version}.tgz"
+    gcloud storage cp "${semver_sha256_file}" "${BETA_GCS_BUCKET}/cpi_releases/bosh-gdch-cpi-${version}.tgz.sha256"
 
     echo "[INFO] Uploading CPI vulnerability report to ${BETA_GCS_BUCKET}/vulnerability-reports/cpi/${version}.md..."
     gcloud storage cp --content-type="text/markdown" "${vuln_report}" "${BETA_GCS_BUCKET}/vulnerability-reports/cpi/${version}.md"
@@ -411,7 +382,7 @@ commit_final_release_metadata() {
   local version="$1"
   local tag="$2"
 
-  git add -- .final_builds "releases/bosh-gdc-cpi/index.yml" "releases/bosh-gdc-cpi/bosh-gdc-cpi-${version}.yml"
+  git add -- .final_builds "releases/bosh-gdch-cpi/index.yml" "releases/bosh-gdch-cpi/bosh-gdch-cpi-${version}.yml"
   if git diff --cached --quiet; then
     echo "[INFO] Final release metadata for ${version} already committed; nothing to push."
     return 0
@@ -427,7 +398,7 @@ commit_final_release_metadata() {
     git config user.name "github-actions[bot]"
     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
   fi
-  git commit -q -s -m "chore(release): cut bosh-gdc-cpi ${tag}" \
+  git commit -q -s -m "chore(release): cut bosh-gdch-cpi ${tag}" \
     -m "Final release metadata (releases/, .final_builds/) for bosh.io; blobs are served from the ${tag} GitHub Release assets."
   echo "[INFO] Committed final release metadata for ${tag} ($(git rev-parse --short HEAD))."
 
@@ -458,8 +429,8 @@ publish_release_stage() {
     exit 1
   fi
 
-  local release_dir="${REPO_ROOT}/releases/bosh-gdc-cpi"
-  local semver_tarball="${release_dir}/bosh-gdc-cpi-${version}.tgz"
+  local release_dir="${REPO_ROOT}/releases/bosh-gdch-cpi"
+  local semver_tarball="${release_dir}/bosh-gdch-cpi-${version}.tgz"
   local semver_sha256_file="${semver_tarball}.sha256"
   local concourse_tarball="${release_dir}/bosh_gdch_cpi_release_${version}.tgz"
   local vuln_report="${release_dir}/vulnerability-report-${version}.md"
@@ -515,8 +486,8 @@ publish_release_stage() {
 
   if [[ "${UPLOAD_TO_GCS}" == "true" ]]; then
     echo "[INFO] Publishing CPI artifacts (${RELEASE_MODE} mode) to ${BETA_GCS_BUCKET}/cpi_releases/..."
-    gcloud storage cp "${semver_tarball}" "${BETA_GCS_BUCKET}/cpi_releases/bosh-gdc-cpi-${version}.tgz"
-    gcloud storage cp "${semver_sha256_file}" "${BETA_GCS_BUCKET}/cpi_releases/bosh-gdc-cpi-${version}.tgz.sha256"
+    gcloud storage cp "${semver_tarball}" "${BETA_GCS_BUCKET}/cpi_releases/bosh-gdch-cpi-${version}.tgz"
+    gcloud storage cp "${semver_sha256_file}" "${BETA_GCS_BUCKET}/cpi_releases/bosh-gdch-cpi-${version}.tgz.sha256"
     gcloud storage cp "${concourse_tarball}" "${BETA_GCS_BUCKET}/cpi_releases/bosh_gdch_cpi_release_${version}.tgz"
     gcloud storage cp --content-type="text/markdown" "${vuln_report}" "${BETA_GCS_BUCKET}/vulnerability-reports/cpi/${version}.md"
   fi
@@ -536,7 +507,7 @@ publish_release_stage() {
 
   local tag="v${version}"
   local repo="${GITHUB_REPOSITORY:-cloudfoundry/bosh-gdc-cpi-release}"
-  local download_url="https://github.com/${repo}/releases/download/${tag}/bosh-gdc-cpi-${version}.tgz"
+  local download_url="https://github.com/${repo}/releases/download/${tag}/bosh-gdch-cpi-${version}.tgz"
   local notes_file="${TMP_DIR}/release-notes.md"
 
   # bosh.io ignores GitHub Releases: it rebuilds final releases from the committed
@@ -545,7 +516,7 @@ publish_release_stage() {
   local final_assets_dir="${TMP_DIR}/final-release-assets"
   local final_release_json="${TMP_DIR}/final-release.json"
   local blob_assets=()
-  if [[ -f "${REPO_ROOT}/releases/bosh-gdc-cpi/bosh-gdc-cpi-${version}.yml" ]]; then
+  if [[ -f "${REPO_ROOT}/releases/bosh-gdch-cpi/bosh-gdch-cpi-${version}.yml" ]]; then
     echo "[INFO] Final release metadata for ${version} already committed; skipping finalize-release."
   else
     ensure_bosh_cli
@@ -566,7 +537,7 @@ publish_release_stage() {
 
 \`\`\`yaml
 releases:
-  - name: bosh-gdc-cpi
+  - name: bosh-gdch-cpi
     version: "${version}"
     url: ${download_url}
     sha1: sha256:${sha256}
@@ -576,7 +547,7 @@ releases:
 
 | Field | Value |
 | :--- | :--- |
-| **Release Name** | \`bosh-gdc-cpi\` |
+| **Release Name** | \`bosh-gdch-cpi\` |
 | **Version** | \`${version}\` |
 | **Git Tag** | \`${tag}\` |
 | **Commit SHA** | \`$(git rev-parse --short HEAD)\` |
@@ -641,8 +612,8 @@ EOF
     echo "[INFO] Verifying final release ${version} can be rebuilt from committed metadata + GitHub Release assets..."
     python3 "${SCRIPT_DIR}/_final_release.py" --repo "${REPO_ROOT}" verify \
       --version "${version}" \
-      --tarball "${TMP_DIR}/bosh-gdc-cpi-${version}.rebuilt.tgz"
-    python3 "${SCRIPT_DIR}/_release_artifact.py" "${TMP_DIR}/bosh-gdc-cpi-${version}.rebuilt.tgz" \
+      --tarball "${TMP_DIR}/bosh-gdch-cpi-${version}.rebuilt.tgz"
+    python3 "${SCRIPT_DIR}/_release_artifact.py" "${TMP_DIR}/bosh-gdch-cpi-${version}.rebuilt.tgz" \
       --expected-version "${version}" >/dev/null
   fi
 

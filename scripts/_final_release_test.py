@@ -42,8 +42,8 @@ format-version: "2"
 
 class AssetNameTest(unittest.TestCase):
     def test_asset_names_are_stable_and_unique_per_fingerprint(self):
-        self.assertEqual(asset_name("package", "bosh-gdc-cpi", "abc"), "package-bosh-gdc-cpi-abc.tgz")
-        self.assertEqual(asset_name("job", "gdc_cpi", "abc"), "job-gdc_cpi-abc.tgz")
+        self.assertEqual(asset_name("package", "bosh-gdch-cpi", "abc"), "package-bosh-gdch-cpi-abc.tgz")
+        self.assertEqual(asset_name("job", "gdch_cpi", "abc"), "job-gdch_cpi-abc.tgz")
         self.assertEqual(asset_name("license", "license", "abc"), "license-abc.tgz")
 
 

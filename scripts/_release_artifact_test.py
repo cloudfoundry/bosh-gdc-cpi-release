@@ -26,8 +26,9 @@ class ReleaseIdentityTest(unittest.TestCase):
 
     def test_candidate_version_and_checksum_come_from_actual_artifact(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = self.artifact(directory, "name: bosh-gdc-cpi\nversion: '0.1.0-candidate.17.1'\njobs: []\n")
+            path = self.artifact(directory, "name: bosh-gdch-cpi\nversion: '0.1.0-candidate.17.1'\njobs: []\n")
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            self.assertEqual(release_identity(path, digest)["name"], "bosh-gdch-cpi")
             self.assertEqual(release_identity(path, digest)["version"], "0.1.0-candidate.17.1")
             self.assertEqual(release_identity(path)["sha256"], digest)
             with self.assertRaises(ValueError):

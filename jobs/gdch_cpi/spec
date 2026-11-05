@@ -1,5 +1,5 @@
 ---
-name: gdc_cpi
+name: gdch_cpi
 
 # BOSH release job template definition, see details in https://bosh.io/docs/create-release/#job-specs
 templates:
@@ -7,7 +7,7 @@ templates:
   cpi_config.json.erb: config/cpi_config.json
 
 packages:
-  - bosh-gdc-cpi
+  - bosh-gdch-cpi
 
 # values of properties are defined in BOSH deployment manifest, see details in https://bosh.io/docs/create-release/#create-props
 properties:

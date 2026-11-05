@@ -1,0 +1,9 @@
+---
+name: bosh-gdch-cpi
+
+dependencies: []
+
+files:
+  # the specs below refer to the files placed in 'src/bosh-gdch-cpi/', see details of
+  # BOSH packaging specs conversion: https://bosh.io/docs/create-release/#update-pkging-specs
+  - bosh-gdch-cpi/cpi_binary_linux
