@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -95,7 +96,6 @@ var (
 	defaultVersion    = discoverLatestStemcellVersion()
 	defaultInfra      = "gdch"
 	defaultHypervisor = "kvm"
-	otherVersion      = defaultVersion + ".1"
 	staticUUID        = "aa937100-7c2f-11ee-b962-0242ac120002"
 	shortUUID         = strings.Split(staticUUID, "-")[0]
 	defaultStemcellID = apiv1.NewStemcellCID(
@@ -355,10 +355,16 @@ func TestDeleteStemcell_IsolatedBetweenInstances(t *testing.T) {
 	cidA := apiv1.NewStemcellCID(fmt.Sprintf("stemcell-%s-%s", sanitizeVersion(defaultVersion), "aaaaaaaa"))
 	cidB := apiv1.NewStemcellCID(fmt.Sprintf("stemcell-%s-%s", sanitizeVersion(defaultVersion), "bbbbbbbb"))
 
-	store := &sharedImageStore{images: map[string]*vmv1.VirtualMachineImage{
-		cidA.AsString(): createVirtualMachineImageWithLabel(cidA.AsString()),
-		cidB.AsString(): createVirtualMachineImageWithLabel(cidB.AsString()),
-	}}
+	store := &sharedImageStore{
+		images: map[string]*vmv1.VirtualMachineImage{
+			cidA.AsString(): createVirtualMachineImageWithLabel(cidA.AsString()),
+			cidB.AsString(): createVirtualMachineImageWithLabel(cidB.AsString()),
+		},
+		imports: map[string]bool{
+			cidA.AsString(): true,
+			cidB.AsString(): true,
+		},
+	}
 
 	c := test.FakeClient()
 	stemcells := NewStemcells(c, projectID, defaultStorage, &statefulImageService{store: store}, uuidGen, logger, &test.Timeout)
@@ -370,8 +376,83 @@ func TestDeleteStemcell_IsolatedBetweenInstances(t *testing.T) {
 	if _, ok := store.images[cidA.AsString()]; ok {
 		t.Fatalf("stemcell %q should have been deleted", cidA.AsString())
 	}
+	if store.imports[cidA.AsString()] {
+		t.Fatalf("image import %q should have been deleted", cidA.AsString())
+	}
 	if _, ok := store.images[cidB.AsString()]; !ok {
 		t.Fatalf("stemcell %q must remain intact after deleting a different instance's stemcell %q", cidB.AsString(), cidA.AsString())
+	}
+	if !store.imports[cidB.AsString()] {
+		t.Fatalf("image import %q must remain intact after deleting a different instance's stemcell %q", cidB.AsString(), cidA.AsString())
+	}
+}
+
+func TestDeleteStemcell_ConvergesAfterPartialDelete(t *testing.T) {
+	// A prior DeleteStemcell removed the VirtualMachineImage but not the
+	// VirtualMachineImageImport. The retry must tolerate the missing image and
+	// still delete the leftover import rather than returning early.
+	store := &sharedImageStore{
+		images:  map[string]*vmv1.VirtualMachineImage{},
+		imports: map[string]bool{defaultStemcellID.AsString(): true},
+	}
+
+	c := test.FakeClient()
+	stemcells := NewStemcells(c, projectID, defaultStorage, &statefulImageService{store: store}, uuidGen, logger, &test.Timeout)
+
+	if err := stemcells.DeleteStemcell(defaultStemcellID); err != nil {
+		t.Fatalf("got unexpected error: %v", err)
+	}
+
+	if store.imports[defaultStemcellID.AsString()] {
+		t.Fatalf("image import %q must be deleted even though its image was already gone", defaultStemcellID.AsString())
+	}
+}
+
+func TestCreateStemcell_RollsBackOrphansOnImportFailure(t *testing.T) {
+	// Once the VirtualMachineImageImport exists, BOSH will never learn its CID and
+	// nothing reclaims it, so a later failure must clean up after itself.
+	imageService := &rollbackRecordingImageService{importErr: errors.New("cannot import image")}
+	c := test.FakeClient()
+	stemcells := NewStemcells(c, projectID, defaultStorage, imageService, uuidGen, logger, &test.Timeout)
+	stemcells.ignoreConflict = true
+
+	_, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
+	if err == nil {
+		t.Fatal("got nil, expected error")
+	}
+	if !strings.Contains(err.Error(), "cannot import image") {
+		t.Fatalf("rollback masked the original failure, got error %q", err)
+	}
+
+	want := []string{defaultStemcellID.AsString()}
+	if !slices.Equal(imageService.deletedImages, want) {
+		t.Errorf("got deleted images %v, expected %v", imageService.deletedImages, want)
+	}
+	if !slices.Equal(imageService.deletedImports, want) {
+		t.Errorf("got deleted image imports %v, expected %v", imageService.deletedImports, want)
+	}
+}
+
+func TestCreateStemcell_FailedRollbackDoesNotMaskError(t *testing.T) {
+	// Cleanup is best effort: if it cannot finish, the caller must still see why
+	// the import failed rather than why the cleanup failed.
+	imageService := &rollbackRecordingImageService{
+		importErr: errors.New("cannot import image"),
+		deleteErr: errors.New("cleanup exploded"),
+	}
+	c := test.FakeClient()
+	stemcells := NewStemcells(c, projectID, defaultStorage, imageService, uuidGen, logger, &test.Timeout)
+	stemcells.ignoreConflict = true
+
+	_, err := stemcells.CreateStemcell(defaultImagePath, defaultStemcellCloudProps)
+	if err == nil {
+		t.Fatal("got nil, expected error")
+	}
+	if !strings.Contains(err.Error(), "cannot import image") {
+		t.Fatalf("got error %q, expected the original import failure", err)
+	}
+	if strings.Contains(err.Error(), "cleanup exploded") {
+		t.Fatalf("cleanup failure leaked into the returned error: %q", err)
 	}
 }
 
@@ -601,16 +682,19 @@ func (m *mockImageService) WaitUntilImageImportDeleted(ctx context.Context, imag
 	return nil
 }
 
-// sharedImageStore models a map-backed VirtualMachineImage registry keyed by
-// stemcell ID, letting a test observe that deleting one instance's stemcell
-// leaves another instance's stemcell intact.
+// sharedImageStore models map-backed VirtualMachineImage and
+// VirtualMachineImageImport registries keyed by stemcell ID, letting a test
+// observe that deleting one instance's stemcell leaves another instance's
+// resources intact.
 type sharedImageStore struct {
-	images map[string]*vmv1.VirtualMachineImage
+	images  map[string]*vmv1.VirtualMachineImage
+	imports map[string]bool
 }
 
 // statefulImageService is a map-backed imageService whose Delete* methods
-// actually remove the keyed entry, so delete-isolation can be asserted against
-// the surviving entries.
+// actually remove the keyed entry and report IsNotFound for entries that are
+// already gone, so delete-isolation and partial-delete convergence can be
+// asserted against the surviving entries.
 type statefulImageService struct {
 	store *sharedImageStore
 }
@@ -619,14 +703,66 @@ func (m *statefulImageService) Get(_ context.Context, imageID string) (*vmv1.Vir
 	if image, ok := m.store.images[imageID]; ok {
 		return image, nil
 	}
-	return nil, apierrors.NewNotFound(schema.GroupResource{Group: "virtualmachine.gdc.goog", Resource: "virtualmachineimages"}, imageID)
+	return nil, notFound("virtualmachineimages", imageID)
 }
 
 func (m *statefulImageService) DeleteImage(_ context.Context, imageID string) error {
+	if _, ok := m.store.images[imageID]; !ok {
+		return notFound("virtualmachineimages", imageID)
+	}
 	delete(m.store.images, imageID)
 	return nil
 }
 func (m *statefulImageService) DeleteImageImport(_ context.Context, imageID string) error {
+	if !m.store.imports[imageID] {
+		return notFound("virtualmachineimageimports", imageID)
+	}
+	delete(m.store.imports, imageID)
+	return nil
+}
+
+func notFound(resource, name string) error {
+	return apierrors.NewNotFound(schema.GroupResource{Group: "virtualmachine.gdc.goog", Resource: resource}, name)
+}
+
+// rollbackRecordingImageService fails the import-completion wait, which is the
+// first step after the VirtualMachineImageImport has been created, and records
+// the cleanup calls CreateStemcell makes in response.
+type rollbackRecordingImageService struct {
+	importErr      error
+	vmImageErr     error
+	deleteErr      error
+	deletedImages  []string
+	deletedImports []string
+}
+
+func (m *rollbackRecordingImageService) Get(_ context.Context, imageID string) (*vmv1.VirtualMachineImage, error) {
+	return createVirtualMachineImageWithLabel(imageID), nil
+}
+
+func (m *rollbackRecordingImageService) DeleteImage(_ context.Context, imageID string) error {
+	m.deletedImages = append(m.deletedImages, imageID)
+	return m.deleteErr
+}
+
+func (m *rollbackRecordingImageService) DeleteImageImport(_ context.Context, imageID string) error {
+	m.deletedImports = append(m.deletedImports, imageID)
+	return m.deleteErr
+}
+
+func (m *rollbackRecordingImageService) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
+	return m.importErr
+}
+
+func (m *rollbackRecordingImageService) WaitUntilVMImageCreation(ctx context.Context, imageID string, timeout time.Duration) error {
+	return m.vmImageErr
+}
+
+func (m *rollbackRecordingImageService) WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
+	return nil
+}
+
+func (m *rollbackRecordingImageService) WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
 	return nil
 }
 func (m *statefulImageService) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
@@ -780,25 +916,6 @@ func createImageImport(status string) *vmv1.VirtualMachineImageImport {
 	}
 }
 
-func createVirtualMachineImageWithoutCPILabel(version string) *vmv1.VirtualMachineImage {
-	return &vmv1.VirtualMachineImage{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            defaultStemcellID.AsString(),
-			Namespace:       projectID,
-			ResourceVersion: "1",
-		},
-		Status: vmv1.VirtualMachineImageStatus{
-			Conditions: []metav1.Condition{
-				{
-					Type:   "Ready",
-					Status: metav1.ConditionTrue,
-					Reason: "Running",
-				},
-			},
-		},
-	}
-}
-
 func createVirtualMachineImageWithLabel(vmName string) *vmv1.VirtualMachineImage {
 	return &vmv1.VirtualMachineImage{
 		ObjectMeta: metav1.ObjectMeta{
@@ -819,58 +936,4 @@ func createVirtualMachineImageWithLabel(vmName string) *vmv1.VirtualMachineImage
 			},
 		},
 	}
-}
-
-func createVirtualMachineImageImport(version, reason string, importName string) *vmv1.VirtualMachineImageImport {
-	return &vmv1.VirtualMachineImageImport{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      importName,
-			Namespace: projectID,
-			Labels: map[string]string{
-				vmconsts.CPILabel: cpiValue,
-			},
-		},
-		Spec: vmv1.VirtualMachineImageImportSpec{
-			Source: vmv1.ImageSourceReference{
-				ObjectStorage: &vmv1.ImageObjectStorageSourceReference{
-					ObjectName: fmt.Sprintf("stemcell-raw-image-%s", version),
-				},
-			},
-		},
-		Status: vmv1.VirtualMachineImageImportStatus{
-			Conditions: []metav1.Condition{
-				{Type: "Ready", Status: metav1.ConditionFalse, Reason: reason},
-			},
-		},
-	}
-}
-
-// A mock implementation of image service that always errors out on Get
-type mockImageServiceErrorGetImage struct{}
-
-func (m *mockImageServiceErrorGetImage) Get(context.Context, string) (*vmv1.VirtualMachineImage, error) {
-	return nil, errors.New("error")
-}
-
-func (m *mockImageServiceErrorGetImage) DeleteImage(context.Context, string) error {
-	return nil
-}
-
-func (m *mockImageServiceErrorGetImage) DeleteImageImport(context.Context, string) error {
-	return nil
-}
-
-func (m *mockImageServiceErrorGetImage) WaitUntilImageImportComplete(ctx context.Context, imageID string, timeout time.Duration) error {
-	return nil
-}
-
-func (m *mockImageServiceErrorGetImage) WaitUntilVMImageCreation(ctx context.Context, imageID string, timeout time.Duration) error {
-	return nil
-}
-
-func (m *mockImageServiceErrorGetImage) WaitUntilImageDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
-	return nil
-}
-func (m *mockImageServiceErrorGetImage) WaitUntilImageImportDeleted(ctx context.Context, imageID string, timeout time.Duration) error {
-	return nil
 }

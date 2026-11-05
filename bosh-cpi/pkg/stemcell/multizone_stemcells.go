@@ -104,14 +104,30 @@ func (s *MultizoneStemcells) CreateStemcell(imagePath string, stemcellCloudProps
 		}
 		s.logger.Info("CreateStemcell", "Confirm stemcell %q exists in zone %q", stemcellCID.AsString(), zone)
 		if err := stemcell.imageService.WaitUntilVMImageCreation(ctx, stemcellCID.AsString(), time.Duration(stemcell.timeout.StemcellReplication)*time.Minute); err != nil {
+			s.cleanupFailedCreate(stemcellCID)
 			return apiv1.StemcellCID{}, fmt.Errorf("Replication of image %q in zone %q: %w", stemcellCID.AsString(), zone, err)
 		}
 		//add the custom CPI label to the zonal image whenever the multizone createstemcell CPI call is made
 		if err := stemcell.addLabelToImage(ctx, stemcellCID.AsString()); err != nil {
+			s.cleanupFailedCreate(stemcellCID)
 			return apiv1.StemcellCID{}, fmt.Errorf("adding label to zonal virtual machine image %q in zone %q: %w", stemcellCID.AsString(), zone, err)
 		}
 	}
 	return stemcellCID, nil
+}
+
+// cleanupFailedCreate removes a stemcell the leader zone already created but that
+// CreateStemcell will not return to BOSH. Unlike DeleteStemcell it walks every
+// zone even when one fails, since a zone left behind here is unreachable: BOSH
+// never learns the CID. Failures are logged rather than returned so the original
+// create error reaches the caller.
+func (s *MultizoneStemcells) cleanupFailedCreate(cid apiv1.StemcellCID) {
+	s.logger.Warn("CreateStemcell", "create of stemcell %q failed, cleaning up in all zones", cid.AsString())
+	for zone, stemcell := range s.zonalStemcells {
+		if err := stemcell.DeleteStemcell(cid); err != nil {
+			s.logger.Warn("CreateStemcell", "cleanup of stemcell %q in zone %q failed, manual cleanup may be required: %v", cid.AsString(), zone, err)
+		}
+	}
 }
 
 func (s *MultizoneStemcells) DeleteStemcell(cid apiv1.StemcellCID) error {

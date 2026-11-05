@@ -217,8 +217,9 @@ func TestDeleteImageImportNotFound(t *testing.T) {
 		Client:    c,
 		ProjectID: "project",
 	}
-	if err := ic.DeleteImageImport(context.Background(), "missing"); err != nil {
-		t.Errorf("got %v, expected nil for a non-existent import", err)
+	err := ic.DeleteImageImport(context.Background(), "missing")
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("got %v, expected an IsNotFound error for a non-existent import", err)
 	}
 }
 

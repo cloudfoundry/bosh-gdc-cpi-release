@@ -686,14 +686,13 @@ func testDeleteStemcell(kubeClient client.Client, stemcellCID string, t *testing
 		t.Fatalf("delete stemcell (%s): %v", stemcellCID, err)
 	}
 
-	importObj := &vmv1.VirtualMachineImageImport{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      stemcellCID,
-			Namespace: projectID,
-		},
+	// delete_stemcell owns both resources, so neither should survive the call.
+	key := client.ObjectKey{Name: stemcellCID, Namespace: projectID}
+	if err := kubeClient.Get(ctx, key, &vmv1.VirtualMachineImage{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("VirtualMachineImage (%s) still exists after delete_stemcell: %v", stemcellCID, err)
 	}
-	if err := kubeClient.Delete(ctx, importObj); err != nil && !apierrors.IsNotFound(err) {
-		t.Fatalf("delete VirtualMachineImageImport (%s): %v", stemcellCID, err)
+	if err := kubeClient.Get(ctx, key, &vmv1.VirtualMachineImageImport{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("VirtualMachineImageImport (%s) still exists after delete_stemcell: %v", stemcellCID, err)
 	}
 }
 

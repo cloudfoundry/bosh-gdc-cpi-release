@@ -122,7 +122,7 @@ func (s *Stemcells) CreateStemcell(imagePath string, stemcellCloudProps apiv1.St
 		fmt.Sprintf("stemcell-%s-%s", sanitizeVersion(props.Version), stemcellUUID),
 	)
 
-	// Step 1: Upload Image to GDC Bucket, idempotent (skips re-upload if object already exists))
+	// Step 1: Upload Image to GDC Bucket, idempotent (skips re-upload if object already exists)
 	imageObjectName, err := s.uploadImageToBucket(imagePath, props)
 	if err != nil {
 		return apiv1.StemcellCID{}, fmt.Errorf("upload stemcell image from local path %s: %w", imagePath, err)
@@ -139,32 +139,32 @@ func (s *Stemcells) CreateStemcell(imagePath string, stemcellCloudProps apiv1.St
 
 // TODO(b/309450687): migrate to use VMM's formal DeleteVirtualMachineImage API when ready (b/305796934)
 func (s *Stemcells) DeleteStemcell(cid apiv1.StemcellCID) error {
-	ctx := context.Background()
-	stemcellID := cid.AsString()
-	// Delete the Image and ImageImport independently: a prior call may have
-	// removed one but not the other, so each step must tolerate "already gone"
-	// (IsNotFound) and still proceed to delete the remaining resource.
+	return s.deleteStemcell(context.Background(), cid.AsString())
+}
+
+// deleteStemcell removes the VirtualMachineImage and the VirtualMachineImageImport
+// that produced it. The image is deleted and drained first so its cascading
+// DataVolume/PVC cleanup finishes before the import that owns it goes away.
+// Each step tolerates IsNotFound and still proceeds to the next, so a partially
+// completed prior delete converges instead of leaking the remaining resource.
+func (s *Stemcells) deleteStemcell(ctx context.Context, stemcellID string) error {
+	timeout := time.Duration(s.timeout.StemcellDeletion) * time.Minute
+
 	if err := s.imageService.DeleteImage(ctx, stemcellID); err != nil {
-		if apierrors.IsNotFound(err) {
-			s.logger.Info("DeleteStemcell", "stemcell %q doesn't exist", stemcellID)
-		} else {
+		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("delete stemcell: %w", err)
 		}
+		s.logger.Info("DeleteStemcell", "stemcell %q doesn't exist", stemcellID)
+	} else if err := s.imageService.WaitUntilImageDeleted(ctx, stemcellID, timeout); err != nil {
+		return fmt.Errorf("delete stemcell %q: %w", stemcellID, err)
 	}
 
 	if err := s.imageService.DeleteImageImport(ctx, stemcellID); err != nil {
-		if apierrors.IsNotFound(err) {
-			s.logger.Info("DeleteStemcell", "stemcell image import %q doesn't exist", stemcellID)
-		} else {
+		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("delete stemcell image import: %w", err)
 		}
-	}
-
-	if err := s.imageService.WaitUntilImageDeleted(ctx, stemcellID, time.Duration(s.timeout.StemcellDeletion)*time.Minute); err != nil {
-		return fmt.Errorf("delete stemcell %q: %w", cid, err)
-	}
-
-	if err := s.imageService.WaitUntilImageImportDeleted(ctx, stemcellID, time.Duration(s.timeout.StemcellDeletion)*time.Minute); err != nil {
+		s.logger.Info("DeleteStemcell", "stemcell image import %q doesn't exist", stemcellID)
+	} else if err := s.imageService.WaitUntilImageImportDeleted(ctx, stemcellID, timeout); err != nil {
 		return fmt.Errorf("delete stemcell image import %q: %w", stemcellID, err)
 	}
 
@@ -172,7 +172,7 @@ func (s *Stemcells) DeleteStemcell(cid apiv1.StemcellCID) error {
 }
 
 // Import stemcell image as a usable bootable image for GDCH VMs
-func (s *Stemcells) importImage(ctx context.Context, imageObjectName string, cid apiv1.StemcellCID, props Property) error {
+func (s *Stemcells) importImage(ctx context.Context, imageObjectName string, cid apiv1.StemcellCID, props Property) (err error) {
 	osVersion, err := s.parseOSVersion(props)
 	if err != nil {
 		return err
@@ -222,6 +222,15 @@ func (s *Stemcells) importImage(ctx context.Context, imageObjectName string, cid
 		return fmt.Errorf("create import of stemcell image as %s: %w", stemcellID, err)
 	}
 
+	// The import, and the image it produces, now exist in GDC but BOSH has no CID
+	// for them until this call returns successfully. Nothing reclaims them later,
+	// so any failure from here on must clean up after itself.
+	defer func() {
+		if err != nil {
+			s.rollbackImport(stemcellID)
+		}
+	}()
+
 	if err := s.imageService.WaitUntilImageImportComplete(ctx, stemcellID, time.Duration(s.timeout.StemcellCreation)*time.Minute); err != nil {
 		return fmt.Errorf("import stemcell image as %s: %w", stemcellID, err)
 	}
@@ -240,7 +249,30 @@ func (s *Stemcells) importImage(ctx context.Context, imageObjectName string, cid
 	return nil
 }
 
+// rollbackImport makes a best-effort attempt to remove the image and image import
+// left behind by a CreateStemcell call that will not return a CID to BOSH. It
+// never reports failure: the caller is already returning an error and the
+// original cause must not be masked.
+func (s *Stemcells) rollbackImport(stemcellID string) {
+	// Use a fresh context: the caller's may already be past its deadline, and
+	// cleanup must not inherit the StemcellCreation timeout. The budget covers
+	// both of deleteStemcell's sequential waits, so a slow but healthy delete is
+	// not cut short and reported as needing manual cleanup.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Duration(s.timeout.StemcellDeletion)*time.Minute)
+	defer cancel()
+
+	s.logger.Warn("importImage", "import of stemcell %q failed, cleaning up partial resources", stemcellID)
+	if err := s.deleteStemcell(ctx, stemcellID); err != nil {
+		s.logger.Warn("importImage", "cleanup of stemcell %q failed, manual cleanup may be required: %v", stemcellID, err)
+	}
+}
+
 // Upload stemcell image from local to S3 bucket in GDCH
+//
+// The object name is keyed on the stemcell version alone, so concurrent CPI
+// instances importing the same version share one upload rather than each paying
+// for a slow GDC transfer. This assumes a given version always means identical
+// bytes: a tarball rebuilt under an existing version will not be re-uploaded.
 func (s *Stemcells) uploadImageToBucket(imagePath string, props Property) (string, error) {
 	imageFileName := filepath.Base(imagePath)
 

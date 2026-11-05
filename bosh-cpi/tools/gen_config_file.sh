@@ -19,7 +19,7 @@ set -e
 
 usage() {
   echo
-  echo "Usage: $0 -lcf <login_config_file> -org <org> -pkf <service_account_private_key_file> -ssf <storage_secret_file> -mbus <agent_mbus> [-gtb <global_trust_bundle_file>] [-oaef <org_api_endpoint_file>] [-image_project <image_project>] [-disable_ssh_proxy] [-enable_external_access] [-stemcell_path <stemcell_path>] [-use_metadata_server] [-use_disk_hotplug] [-use_cloud_nat_gateways] [-refresh_image_import] [-use_tier1_network]"
+  echo "Usage: $0 -lcf <login_config_file> -org <org> -pkf <service_account_private_key_file> -ssf <storage_secret_file> -mbus <agent_mbus> [-gtb <global_trust_bundle_file>] [-oaef <org_api_endpoint_file>] [-image_project <image_project>] [-disable_ssh_proxy] [-enable_external_access] [-stemcell_path <stemcell_path>] [-use_metadata_server] [-use_disk_hotplug] [-use_cloud_nat_gateways] [-use_tier1_network]"
   exit 1
 }
 
@@ -39,7 +39,6 @@ isMultiZone=false
 use_metadata_server=false
 use_disk_hotplug=false
 use_cloud_nat_gateways=false
-refresh_image_import=false
 use_tier1_network=false
 
 while [[ "$#" -gt 0 ]]; do
@@ -85,7 +84,6 @@ while [[ "$#" -gt 0 ]]; do
   -use_metadata_server) use_metadata_server=true ;;
   -use_disk_hotplug) use_disk_hotplug=true ;;
   -use_cloud_nat_gateways) use_cloud_nat_gateways=true ;;
-  -refresh_image_import) refresh_image_import=true ;;
   -use_tier1_network) use_tier1_network=true ;;
   esac
   shift
@@ -171,8 +169,6 @@ echo "Disable SSH Proxy: $disable_ssh_proxy"
 echo "Enable VM external access: $enable_external_access"
 echo "Use metadata server: $use_metadata_server"
 echo "Use disk hotplug: $use_disk_hotplug"
-echo "Refresh Image Import: $refresh_image_import"
-
 # Create config JSON
 json_data=$(
   cat <<EOF
@@ -207,7 +203,6 @@ json_data=$(
     "useMetadataServer": $use_metadata_server,
     "useDiskHotplug": $use_disk_hotplug,
     "useCloudNatGateways": $use_cloud_nat_gateways,
-    "refreshImageImport": $refresh_image_import,
     "useTier1Network": $use_tier1_network
   },
   "agent": {
@@ -252,7 +247,6 @@ $(echo "$zonal_apis" | jq -c '.' | yq -p json -o yaml | sed "s/^/$(printf '%9s' 
    useMetadataServer: ${use_metadata_server}
    useDiskHotplug: ${use_disk_hotplug}
    useCloudNatGateways: ${use_cloud_nat_gateways}
-   refreshImageImport: ${refresh_image_import}
    useTier1Network: ${use_tier1_network}
 agent:
     mbus: ${mbus}
