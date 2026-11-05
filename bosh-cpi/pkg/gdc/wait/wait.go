@@ -18,7 +18,6 @@ package wait
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -30,7 +29,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
 
-const defaultPollInterval = 5 * time.Minute
+// defaultPollInterval is the fallback poll cadence for UntilDeleted. The watch
+// in `until` is the primary signal; this poll is a safety net in case the watch
+// stream misses or never delivers a Deleted event (e.g. the object is already
+// gone, or the watch is silently dropped). Kept short so deletion is detected
+// promptly rather than blocking the CPI call for minutes.
+const defaultPollInterval = 30 * time.Second
 
 type logger interface {
 	Info(msg string, keyValues ...any)
@@ -62,6 +66,8 @@ func (w *Waiter) Until(
 	obj client.Object,
 	timeout time.Duration,
 ) error {
+	// Single producer (the `until` goroutine); the consumer below always
+	// receives exactly one result, so an unbuffered channel is sufficient.
 	resultCh := make(chan *result)
 
 	ec := func(et watch.EventType, obj client.Object) (bool, error) {
@@ -90,6 +96,10 @@ func (w *Waiter) UntilDeleted(
 		return et == watch.Deleted, nil
 	}
 
+	// Two producers (the watch-based `until` and the poll-based `checkDeleted`)
+	// but the consumer reads only the first result. Buffer of 2 ensures the
+	// losing producer can send and exit instead of blocking forever on a
+	// channel nobody is reading after this method returns.
 	resultCh := make(chan *result, 2)
 
 	childCtx, cancel := context.WithCancel(ctx)
@@ -197,14 +207,14 @@ func (w *Waiter) wait(
 
 	wi, err := w.Client.Watch(ctx, objList, listOpt)
 	if err != nil {
-		return true, fmt.Errorf("set up watch: %v", err)
+		return true, fmt.Errorf("set up watch: %w", err)
 	}
 	defer wi.Stop()
 
 	for {
 		select {
 		case <-timeoutChan:
-			return true, errors.New("timeout, stop the watch")
+			return true, fmt.Errorf("timed out waiting on %q, stopping the watch", name)
 		case res, ok := <-wi.ResultChan():
 			if !ok {
 				w.Logger.Info("waiter", "current watcher channel is closed")
@@ -234,7 +244,7 @@ func (w *Waiter) wait(
 
 			switch ok, err := check(res.Type, obj); {
 			case err != nil:
-				return true, fmt.Errorf("check object condition: %v", err)
+				return true, fmt.Errorf("check object condition: %w", err)
 			case ok:
 				return true, nil
 			}
@@ -253,7 +263,7 @@ func (w *Waiter) toObjectList(o client.Object) (client.ObjectList, error) {
 	listGVK := gvk.GroupVersion().WithKind(gvk.Kind + "List")
 	l, err := scheme.New(listGVK)
 	if err != nil {
-		return nil, fmt.Errorf("create new object: %v", err)
+		return nil, fmt.Errorf("create new object: %w", err)
 	}
 
 	ol, ok := l.(client.ObjectList)

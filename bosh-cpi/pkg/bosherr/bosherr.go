@@ -14,7 +14,12 @@
 
 package bosherr
 
-import "github.com/cloudfoundry/bosh-cpi-go/rpc"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/cloudfoundry/bosh-cpi-go/rpc"
+)
 
 type BoshErrType string
 
@@ -88,4 +93,29 @@ func (e Err) Type() string {
 
 func (e Err) CanRetry() bool {
 	return e.Retryable
+}
+
+// Wrapf annotates err with a message, preserving the ErrType and Retryable
+// hints carried by any Err in its chain.
+//
+// Plain fmt.Errorf drops them. The bosh-cpi-go dispatcher type-asserts the
+// top-level error against rpc.RetryableError instead of unwrapping it, so an Err
+// buried under a fmt wrapper silently reaches the director as non-retryable:
+// https://github.com/cloudfoundry/bosh-cpi-go/blob/27f6ca08ad1b1bfef72b537169aea3fc06645c83/rpc/json_dispatcher.go#L108
+//
+// Use this instead of fmt.Errorf on any path that can carry an Err up to a CPI
+// method return.
+func Wrapf(err error, format string, args ...any) error {
+	wrapped := fmt.Errorf(format+": %w", append(args, err)...)
+
+	var boshErr Err
+	if !errors.As(err, &boshErr) {
+		return wrapped
+	}
+
+	return Err{
+		Message:   wrapped,
+		ErrType:   boshErr.ErrType,
+		Retryable: boshErr.Retryable,
+	}
 }

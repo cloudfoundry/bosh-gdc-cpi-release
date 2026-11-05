@@ -271,7 +271,7 @@ func (d *Disks) AttachDiskV2(vmCID apiv1.VMCID, diskCID apiv1.DiskCID) (apiv1.Di
 	if !d.useDiskHotplug {
 		if !stopped {
 			if err := d.vmService.Stop(ctx, vm); err != nil {
-				return apiv1.DiskHint{}, fmt.Errorf("stop VM %s: %w", vm.Name, err)
+				return apiv1.DiskHint{}, bosherr.Wrapf(err, "stop VM %s", vm.Name)
 			}
 			defer func() {
 				if !startedExplicitly {
@@ -328,7 +328,7 @@ func (d *Disks) AttachDiskV2(vmCID apiv1.VMCID, diskCID apiv1.DiskCID) (apiv1.Di
 		// knows it doesn't need to start the VM a second time.
 		if !d.useMetadataServer {
 			if err := d.vmService.Start(ctx, vm); err != nil {
-				return apiv1.DiskHint{}, fmt.Errorf("start vm %s: %w", vm.Name, err)
+				return apiv1.DiskHint{}, bosherr.Wrapf(err, "start vm %s", vm.Name)
 			}
 			startedExplicitly = true
 			if stopped {
@@ -409,7 +409,7 @@ func (d *Disks) DetachDisk(vmCID apiv1.VMCID, diskCID apiv1.DiskCID) error {
 	if !d.useDiskHotplug {
 		if !stopped {
 			if err := d.vmService.Stop(ctx, vm); err != nil {
-				return fmt.Errorf("stop VM %s: %w", vm.Name, err)
+				return bosherr.Wrapf(err, "stop VM %s", vm.Name)
 			}
 			defer func() {
 				if !startedExplicitly {
@@ -460,7 +460,7 @@ func (d *Disks) DetachDisk(vmCID apiv1.VMCID, diskCID apiv1.DiskCID) error {
 		// knows it doesn't need to start the VM a second time.
 		if !d.useMetadataServer {
 			if err := d.vmService.Start(ctx, vm); err != nil {
-				return fmt.Errorf("start vm %s: %w", vm.Name, err)
+				return bosherr.Wrapf(err, "start vm %s", vm.Name)
 			}
 			startedExplicitly = true
 			if stopped {

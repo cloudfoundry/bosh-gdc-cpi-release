@@ -207,7 +207,12 @@ func (v *VMs) CreateVMV2(
 		return apiv1.VMCID{}, networks, fmt.Errorf("generate vm uuid: %w", err)
 	}
 
-	// Make VM ID shorter to avoid length validation error
+	// Use only the first UUID segment (8 hex chars, 32 bits) to keep the VM name
+	// within GDCH/Kubernetes name length limits. By the birthday bound a
+	// collision becomes likely around 65k concurrent names rather than 4 billion,
+	// which is still well above what one director manages. A collision is also
+	// self-healing: the Create below fails with AlreadyExists and the director
+	// retries create_vm with a fresh UUID.
 	vmUUID := strings.Split(genUUID, "-")[0]
 
 	vmName := prop.Name

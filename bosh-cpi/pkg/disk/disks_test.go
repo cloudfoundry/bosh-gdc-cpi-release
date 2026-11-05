@@ -1585,6 +1585,27 @@ func TestFindVMIP_NOVMIngress_GetVMIP_Success(t *testing.T) {
 	}
 }
 
+func TestFindVMIP_WrappedNotFoundIngress_FallsBackToVMIP(t *testing.T) {
+	// CPIFinder.FindVMIngressIP annotates the NotFound before returning it, so the
+	// fallback below depends on IsNotFound unwrapping rather than matching the
+	// bare API error.
+	c := test.FakeClient()
+
+	f := objectFinderForVMIP{
+		findIngressIPErr: fmt.Errorf("VM %s external access not found: %w", "vmtest",
+			apierrors.NewNotFound(schema.GroupResource{}, "vmtest")),
+	}
+	disks := NewDisks(c, projectID, f, logger, uuidGen, &statefulMockAgentService{}, mock.NewMockWaiter(c, projectID), &mockVMService{}, &test.Timeout, false, true, false, &statefulMockMetadataClient{})
+
+	ip, err := disks.findVMIP(context.Background(), "vmtest")
+	if err != nil {
+		t.Fatalf("got error: %v", err)
+	}
+	if ip != vmIP {
+		t.Fatalf("got IP %s, expected vmIP %s", ip, vmIP)
+	}
+}
+
 func TestFindVMIP_NOVMIngress_GetVMIP_Failed(t *testing.T) {
 	c := test.FakeClient()
 
