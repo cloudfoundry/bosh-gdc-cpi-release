@@ -89,10 +89,6 @@ properties:
     description: "Cloud NAT gateways are used for egress"
     default: true
 
-  gdch.refresh_image_import:
-    description: "If true, kicks off the new custom image import process for a given stemcell version"
-    default: false
-
   gdch.use_tier1_network:
     description: "Enable Tier 1 Network for VM instances"
     default: false

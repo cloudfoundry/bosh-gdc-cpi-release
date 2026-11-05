@@ -15,7 +15,9 @@
 package stemcell
 
 import (
+	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -71,7 +73,6 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 					&mockImageServiceErrorCheckImage{},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[0]},
 					logger, &test.Timeout,
-					false,
 				),
 				"zone2": NewStemcells(
 					test.FakeClient(),
@@ -80,7 +81,6 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 					&mockImageServiceErrorCheckImage{},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[1]},
 					logger, &test.Timeout,
-					false,
 				),
 			},
 			wantError: fmt.Errorf(
@@ -98,7 +98,6 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 					&mockImageService{existingImage: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[0]},
 					logger, &test.Timeout,
-					false,
 				),
 				"zone2": NewStemcells(
 					test.FakeClient(),
@@ -107,7 +106,6 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 					&mockImageServiceErrorCheckImage{},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[1]},
 					logger, &test.Timeout,
-					false,
 				),
 			},
 			wantError: fmt.Errorf(
@@ -125,7 +123,6 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 						&mockImageService{existingImage: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 						&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[0]},
 						logger, &test.Timeout,
-						false,
 					)
 					s.ignoreConflict = true
 					return s
@@ -138,7 +135,6 @@ func TestCreateMultizoneStemcells(t *testing.T) {
 						&mockImageService{existingImage: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 						&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[1]},
 						logger, &test.Timeout,
-						false,
 					)
 					s.ignoreConflict = true
 					return s
@@ -193,7 +189,6 @@ func TestDeleteMultizoneStemcells(t *testing.T) {
 					&mockImageService{existingImage: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[0]},
 					logger, &test.Timeout,
-					false,
 				),
 				"zone2": NewStemcells(
 					test.FakeClient(createVirtualMachineImageWithLabel(defaultStemcellID.AsString())),
@@ -202,7 +197,6 @@ func TestDeleteMultizoneStemcells(t *testing.T) {
 					&mockImageServiceErrorDeletion{image: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[1]},
 					logger, &test.Timeout,
-					false,
 				),
 			},
 			wantError: fmt.Errorf("Delete stemcell %q in zone \"zone2\": "+
@@ -219,7 +213,6 @@ func TestDeleteMultizoneStemcells(t *testing.T) {
 					&mockImageService{existingImage: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[0]},
 					logger, &test.Timeout,
-					false,
 				),
 				"zone2": NewStemcells(
 					test.FakeClient(),
@@ -228,7 +221,6 @@ func TestDeleteMultizoneStemcells(t *testing.T) {
 					&mockImageService{existingImage: createVirtualMachineImageWithLabel(defaultStemcellID.AsString())},
 					&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[1]},
 					logger, &test.Timeout,
-					false,
 				),
 			},
 		},
@@ -248,6 +240,46 @@ func TestDeleteMultizoneStemcells(t *testing.T) {
 				t.Fatalf("got unexpected error: %v, want: %v", err, tc.wantError)
 			}
 		})
+	}
+}
+
+func TestCreateMultizoneStemcells_CleansUpEveryZoneOnReplicationFailure(t *testing.T) {
+	// The leader zone imported successfully but a follower never sees the replica,
+	// so CreateStemcell returns no CID and BOSH can never reach the image. Every
+	// zone must be cleaned up, not just the one that failed.
+	leader := &rollbackRecordingImageService{}
+	follower := &rollbackRecordingImageService{vmImageErr: errors.New("cannot find the vmimage")}
+
+	leaderStemcells := NewStemcells(
+		test.FakeClient(), projectID, defaultStorage, leader,
+		&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[0]}, logger, &test.Timeout,
+	)
+	leaderStemcells.ignoreConflict = true
+
+	m := &MultizoneStemcells{
+		leaderZone: "zone1",
+		logger:     logger,
+		zonalStemcells: map[string]*Stemcells{
+			"zone1": leaderStemcells,
+			"zone2": NewStemcells(
+				test.FakeClient(), projectID, defaultStorage, follower,
+				&staticMultiZoneUUIDGenerator{uuid: multiZoneUUIDs[1]}, logger, &test.Timeout,
+			),
+		},
+	}
+
+	if _, err := m.CreateStemcell(defaultImagePath, defaultStemcellCloudProps); err == nil {
+		t.Fatal("got nil, expected error")
+	}
+
+	want := []string{defaultStemcellID.AsString()}
+	for zone, imageService := range map[string]*rollbackRecordingImageService{"zone1": leader, "zone2": follower} {
+		if !slices.Equal(imageService.deletedImages, want) {
+			t.Errorf("zone %q: got deleted images %v, expected %v", zone, imageService.deletedImages, want)
+		}
+		if !slices.Equal(imageService.deletedImports, want) {
+			t.Errorf("zone %q: got deleted image imports %v, expected %v", zone, imageService.deletedImports, want)
+		}
 	}
 }
 

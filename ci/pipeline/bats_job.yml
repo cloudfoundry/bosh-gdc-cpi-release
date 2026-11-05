@@ -74,8 +74,10 @@
             done
     - task: run-bats
       image: cfbosh-image
-      # Express suite takes ~1.5 h; cap the task so a stuck run cannot hold the bats-lock indefinitely
-      timeout: 3h
+      # Express suite takes ~1.5 h, preceded by a full GDC image import for the stemcell the Director
+      # uploads (up to the 150m StemcellCreation timeout) now that each CPI call owns its own image.
+      # Cap the task so a stuck run cannot hold the bats-lock indefinitely.
+      timeout: 5h
       config:
         platform: linux
         inputs:
@@ -137,9 +139,10 @@
             mkdir -p "${bats_run_dir}"
 
             echo "[INFO] Running BOSH acceptance tests (GDCH express suite)"
-            # --patch-no-delete-stemcell: upstream BATs teardown deletes the stemcell it used. On GDCH the CPI
-            # maps that to deleting the VirtualMachineImage, which is the same image create-env.sh's state
-            # references for the Director VM; deleting it breaks the next bosh-deployment run.
+            # --patch-no-delete-stemcell: upstream BATs teardown deletes the stemcell it used. The CPI now
+            # gives every create_stemcell call its own VirtualMachineImage, so that teardown no longer
+            # touches the image create-env.sh's state references, and this flag should become unnecessary.
+            # Keep it until a few pipeline runs have exercised per-call ownership end to end.
             set +e
             ./run-bats.sh --gdch-express --patch-no-delete-stemcell --no-color 2>&1 | tee /tmp/run-bats_${run_id}.log
             bats_exit_code=${PIPESTATUS[0]}

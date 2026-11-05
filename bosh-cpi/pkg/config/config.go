@@ -95,9 +95,6 @@ type GDCConfig struct {
 	// Use CloudNAT Gateways for Egress.
 	UseCloudNATGateways bool `json:"useCloudNATGateways,omitempty"`
 
-	//Use RefreshImageImport to force custom image import from scratch
-	RefreshImageImport bool `json:"refreshImageImport,omitempty"`
-
 	// Use Tier 1 Network. VMs with Tier 1 networking configurations are especially useful
 	// for large distributed compute workloads with lots of heavy internode communications.
 	UseTier1Network bool `json:"useTier1Network,omitempty"`

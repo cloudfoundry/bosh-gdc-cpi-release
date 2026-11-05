@@ -81,6 +81,8 @@ func (c *Client) DeleteImage(ctx context.Context, imageID string) error {
 // DeleteImageImport deletes the VirtualMachineImageImport that produced the
 // image. The import shares the image's name and is not garbage-collected when
 // the VirtualMachineImage is deleted, so it must be removed explicitly.
+// Like DeleteImage, a missing import surfaces as an IsNotFound error so callers
+// can distinguish "already gone" from a real failure.
 func (c *Client) DeleteImageImport(ctx context.Context, imageID string) error {
 	imageImport := &vmv1.VirtualMachineImageImport{
 		ObjectMeta: metav1.ObjectMeta{
@@ -90,9 +92,6 @@ func (c *Client) DeleteImageImport(ctx context.Context, imageID string) error {
 	}
 
 	if err := c.Client.Delete(ctx, imageImport); err != nil {
-		if errors.IsNotFound(err) {
-			return nil
-		}
 		return fmt.Errorf("delete VirtualMachineImageImport %q: %w", imageID, err)
 	}
 
