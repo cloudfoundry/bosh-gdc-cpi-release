@@ -41,7 +41,7 @@ require (
 
 require (
 	github.com/cloudfoundry/bosh-cpi-go v0.0.0-20260221100037-8b66e1def6f1
-	github.com/cloudfoundry/bosh-utils v0.0.670
+	github.com/cloudfoundry/bosh-utils v0.0.671
 	github.com/googlecloudplatform/google-distributed-cloud-apis v0.0.0-20260824201624-0c18fa0ddc04
 	github.com/hashicorp/go-multierror v1.1.1
 	golang.org/x/exp v0.0.0-20250718183923-645b1fa84792
