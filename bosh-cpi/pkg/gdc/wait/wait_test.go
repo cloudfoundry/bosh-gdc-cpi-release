@@ -109,7 +109,7 @@ func TestUntilErrors(t *testing.T) {
 				fClock.timeChan <- time.Now()
 			},
 			checker:       podRunningChecker,
-			expectedError: "timeout, stop the watch",
+			expectedError: `timed out waiting on "pod1", stopping the watch`,
 		},
 		"result from a different name": {
 			action: func(fClock *fakeClock, fClient *fakeClient) {
@@ -277,7 +277,7 @@ func TestUntilDeletedErrors(t *testing.T) {
 				// Send a time object to the channel to trigger a timeout.
 				fClock.timeChan <- time.Now()
 			},
-			expectedError: "timeout, stop the watch",
+			expectedError: `timed out waiting on "pod1", stopping the watch`,
 			initObjs:      []client.Object{pod("pod1", "proj1", "")},
 		},
 		"result from a different name": {

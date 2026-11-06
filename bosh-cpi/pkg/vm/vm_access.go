@@ -93,7 +93,7 @@ func (a *Access) virtualMachineExternalAccess(vmName string, useCloudNATGateways
 
 	var annotations map[string]string
 	if useCloudNATGateways {
-		a.logger.Info("Cloud NAT Egress gateways are enabled. Applying Cloud NAT Enabled annotation: \"%v\":true to VMEA", consts.UseCloudNATEgressControlAnnotationKey)
+		a.logger.Info("vmAccess", "Cloud NAT Egress gateways are enabled. Applying Cloud NAT Enabled annotation: \"%v\":true to VMEA", consts.UseCloudNATEgressControlAnnotationKey)
 		annotations = map[string]string{}
 		annotations[consts.UseCloudNATEgressControlAnnotationKey] = "true"
 	}

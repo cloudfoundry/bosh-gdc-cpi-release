@@ -16,6 +16,7 @@ package vm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -24,9 +25,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/bosherr"
 	"github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/config"
 	"github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/gdc/wait"
 	vmv1 "github.com/googlecloudplatform/google-distributed-cloud-apis/pkg/apis/public/virtualmachine/v1"
@@ -50,7 +53,7 @@ type VMService struct {
 // VM is "Stopped" state with the status of `Editable“ condition set to true.
 func (v *VMService) Stop(ctx context.Context, vm *vmv1.VirtualMachine) error {
 	if err := v.changeVMRunningState(ctx, vm, vmv1.VirtualMachineRunningStateStopped); err != nil {
-		return fmt.Errorf("stop VM %s: %w", vm.Name, err)
+		return bosherr.Wrapf(err, "stop VM %s", vm.Name)
 	}
 
 	if err := v.WaitForVMState(ctx, vm.Name, vmv1.VirtualMachineStateStopped, vmv1.ConditionTypeEditable, metav1.ConditionTrue, time.Duration(v.Timeout.VMStop)*time.Minute); err != nil {
@@ -65,7 +68,7 @@ func (v *VMService) Stop(ctx context.Context, vm *vmv1.VirtualMachine) error {
 // VM is "Running" state with the status of `GuestEnvironmentSynced` condition set to true.
 func (v *VMService) Start(ctx context.Context, vm *vmv1.VirtualMachine) error {
 	if err := v.changeVMRunningState(ctx, vm, vmv1.VirtualMachineRunningStateRunning); err != nil {
-		return fmt.Errorf("start VM %s: %w", vm.Name, err)
+		return bosherr.Wrapf(err, "start VM %s", vm.Name)
 	}
 
 	if err := v.WaitForVMState(ctx, vm.Name, vmv1.VirtualMachineStateRunning, vmv1.ConditionTypeGuestEnvironmentSynced, metav1.ConditionTrue, time.Duration(v.Timeout.VMStart)*time.Minute); err != nil {
@@ -205,7 +208,38 @@ func (v *VMService) changeVMRunningState(ctx context.Context, vm *vmv1.VirtualMa
 
 	vm.Spec.RunningState = &st
 	if err := patchHelper.Patch(ctx, vm); err != nil {
+		if isConflict(err) {
+			return bosherr.Err{
+				Message:   fmt.Errorf("patch VM: %w", err),
+				Retryable: true,
+			}
+		}
 		return fmt.Errorf("patch VM: %w", err)
 	}
 	return nil
+}
+
+// isConflict reports whether err, or any error nested in an aggregate it wraps,
+// is a Kubernetes conflict.
+//
+// apierrors.IsConflict alone is not sufficient for errors coming out of
+// patch.Helper: it returns the API error inside a kerrors.Aggregate, and
+// Aggregate has no Unwrap method, so the errors.As traversal that IsConflict
+// relies on stops there and never reaches the StatusError. Callers patching
+// through a raw client.Client can keep using apierrors.IsConflict directly.
+func isConflict(err error) bool {
+	if apierrors.IsConflict(err) {
+		return true
+	}
+
+	var aggregate kerrors.Aggregate
+	if errors.As(err, &aggregate) {
+		for _, nested := range aggregate.Errors() {
+			if isConflict(nested) {
+				return true
+			}
+		}
+	}
+
+	return false
 }

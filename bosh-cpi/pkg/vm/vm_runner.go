@@ -28,9 +28,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/bosherr"
 	"github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/consts"
 	"github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/network"
 	"github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/unit"
@@ -185,15 +185,15 @@ func (v *VMs) PerformReboot(ctx context.Context, vm *vmv1.VirtualMachine) error 
 		// stopping the VM and followed with an immediate start.
 		// https://github.com/kubevirt/kubevirt/blob/main/docs/graceful-shutdown.md
 		if err := v.vmService.Stop(ctx, vm); err != nil {
-			return fmt.Errorf("power off VM %s: %w", vm.Name, err)
+			return bosherr.Wrapf(err, "power off VM %s", vm.Name)
 		}
 		if err := v.vmService.Start(ctx, vm); err != nil {
-			return fmt.Errorf("power on VM %s: %w", vm.Name, err)
+			return bosherr.Wrapf(err, "power on VM %s", vm.Name)
 		}
 		return nil
 	case vmv1.VirtualMachineStateStopped:
 		if err := v.vmService.Start(ctx, vm); err != nil {
-			return fmt.Errorf("power on VM %s: %w", vm.Name, err)
+			return bosherr.Wrapf(err, "power on VM %s", vm.Name)
 		}
 		return nil
 	default:
@@ -407,7 +407,7 @@ func (v *VMs) createVM(ctx context.Context, input vmCreationInput) error {
 			v.logger.Info("createVM", "Cloud NAT VM cloud property is not present but Cloud NAT is enabled. Not setting VM label.")
 		}
 	} else {
-		v.logger.Info("Cloud NAT Gateways are disabled. Add label: %v:true to VM", consts.VMExternalEgressControlLabelKey)
+		v.logger.Info("createVM", "Cloud NAT Gateways are disabled. Add label: %v:true to VM", consts.VMExternalEgressControlLabelKey)
 		// label added for external egress (legacy): b/370383312#comment8
 		// TODO(b/370823810): use `VirtualMachineExternalAccess` to control VM egress
 		vm.Labels[consts.VMExternalEgressControlLabelKey] = "true"
@@ -438,7 +438,7 @@ func (v *VMs) createVM(ctx context.Context, input vmCreationInput) error {
 	}
 
 	if err := v.cloudClient.Create(ctx, vm); err != nil {
-		return fmt.Errorf("create vm: %w", err)
+		return fmt.Errorf("create vm %q: %w", vm.Name, err)
 	}
 
 	// By BOSH CPI doc: https://github.com/cloudfoundry/docs-bosh/blob/main/content/cpi-api-v2-method/create-vm.md
@@ -508,7 +508,7 @@ func (v *VMs) createVM(ctx context.Context, input vmCreationInput) error {
 func (v *VMs) cleanupAll(ctx context.Context, vm *vmv1.VirtualMachine) {
 	v.access.cleanup(ctx, vm.Name, v.useCloudNATGateways)
 	if err := v.cloudClient.Delete(ctx, vm); err != nil {
-		v.logger.Warn("createVM", "createVM failed. Failed to cleanup vm %s", vm.Name)
+		v.logger.Warn("createVM", "createVM failed. Failed to cleanup vm %s: %v", vm.Name, err)
 	}
 }
 
@@ -534,30 +534,15 @@ func (v *VMs) waitForDiskReady(ctx context.Context, diskName string, timeout tim
 	return nil
 }
 
-func (v *VMs) deleteDisk(ctx context.Context, diskName string) error {
-	disk := &vmv1.VirtualMachineDisk{}
-	if err := v.cloudClient.Get(ctx, client.ObjectKey{Name: diskName, Namespace: v.projectID}, disk); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("find disk %q: %v", diskName, err)
-		}
-		return nil
-	}
-
-	if err := v.cloudClient.Delete(ctx, disk); err != nil {
-		return fmt.Errorf("delete disk %q: %v", diskName, err)
-	}
-	return nil
-}
-
 func (v *VMs) cleanupOrphans(ctx context.Context, vmName string) {
 	bootDiskName := bootDiskName(vmName)
 	if err := v.vmService.DeleteDisk(ctx, bootDiskName); err != nil {
-		v.logger.Warn("createVM", "createVM failed. Failed to cleanup disk %s", bootDiskName)
+		v.logger.Warn("createVM", "createVM failed. Failed to cleanup disk %s: %v", bootDiskName, err)
 	}
 
 	ephemeralDiskName := ephemeralDiskName(vmName)
 	if err := v.vmService.DeleteDisk(ctx, ephemeralDiskName); err != nil {
-		v.logger.Warn("createVM", "createVM failed. Failed to cleanup disk %s", ephemeralDiskName)
+		v.logger.Warn("createVM", "createVM failed. Failed to cleanup disk %s: %v", ephemeralDiskName, err)
 	}
 }
 

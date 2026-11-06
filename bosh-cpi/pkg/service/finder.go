@@ -53,7 +53,7 @@ func (c *CPIFinder) FindVMIngressIP(ctx context.Context, vmID string) (string, e
 	vmea := &vmv1.VirtualMachineExternalAccess{}
 	if err := c.client.Get(ctx, client.ObjectKey{Name: vmID, Namespace: c.projectID}, vmea); err != nil {
 		if errors.IsNotFound(err) {
-			return "", err
+			return "", fmt.Errorf("VM %s external access not found: %w", vmID, err)
 		} else {
 			return "", fmt.Errorf("unexpected error when fetching VM %s external access: %w", vmID, err)
 		}
@@ -73,10 +73,12 @@ func (c *CPIFinder) FindVMIP(ctx context.Context, vmID string) (string, error) {
 	}
 
 	var cidr string
+	interfaceFound := false
 
 	targetInterfaceName := vmNodeNetworkLancerInterfaceName
 	for _, netif := range vm.Status.Network.Interfaces {
 		if netif.Name == targetInterfaceName {
+			interfaceFound = true
 			if len(netif.IpAddresses) == 0 {
 				return "", fmt.Errorf("VM %s node network interface IP has not been populated yet", vmID)
 			}
@@ -84,9 +86,13 @@ func (c *CPIFinder) FindVMIP(ctx context.Context, vmID string) (string, error) {
 			break
 		}
 	}
+	if !interfaceFound {
+		return "", fmt.Errorf("VM %s has no node network interface %q", vmID, targetInterfaceName)
+	}
+
 	ip, _, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return "", fmt.Errorf("parse CIDR %q", cidr)
+		return "", fmt.Errorf("parse CIDR %q for VM %s: %w", cidr, vmID, err)
 	}
 
 	return ip.String(), nil

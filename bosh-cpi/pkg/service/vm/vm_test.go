@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
 
+	"github.com/cloudfoundry/bosh-cpi-go/rpc"
 	cfboshlog "github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/logger"
 	boshlog "github.com/cloudfoundry/bosh-utils/logger"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -33,6 +34,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/gdc/wait/mock"
@@ -513,5 +515,60 @@ func withState(state vmv1.VirtualMachineState) option {
 func withDisks(disks []vmv1.DiskAttachment) option {
 	return func(vm *vmv1.VirtualMachine) {
 		vm.Spec.Disks = disks
+	}
+}
+
+// conflictOnPatchClient serves reads normally but rejects every patch with a
+// 409, standing in for a controller that touches the VM between our read and
+// our write.
+type conflictOnPatchClient struct {
+	client.Client
+}
+
+func (c conflictOnPatchClient) Patch(_ context.Context, obj client.Object, _ client.Patch, _ ...client.PatchOption) error {
+	return apierrors.NewConflict(
+		schema.GroupResource{Group: "virtualmachine.gdc.goog", Resource: "virtualmachines"},
+		obj.GetName(),
+		errors.New("the object has been modified; please apply your changes to the latest version and try again"),
+	)
+}
+
+func TestStartStopVM_ConflictReachesDirectorAsRetryable(t *testing.T) {
+	// rpc.JSONDispatcher type-asserts the top-level error rather than unwrapping
+	// it, so asserting on bosherr.Wrapf in isolation is not enough: the error
+	// Start/Stop actually return has to satisfy rpc.RetryableError itself.
+	vmID := "test-vm"
+
+	testCases := map[string]struct {
+		call func(*VMService, *vmv1.VirtualMachine) error
+	}{
+		"stop": {call: func(v *VMService, vm *vmv1.VirtualMachine) error { return v.Stop(ctx, vm) }},
+		"start": {call: func(v *VMService, vm *vmv1.VirtualMachine) error {
+			return v.Start(ctx, vm)
+		}},
+	}
+
+	for id, tc := range testCases {
+		t.Run(id, func(t *testing.T) {
+			vm := virtualMachine(vmID, withState(vmv1.VirtualMachineStateRunning))
+			ts := newDefaultTestSetup(vm)
+			ts.v.Client = conflictOnPatchClient{ts.c}
+
+			err := tc.call(ts.v, vm)
+			if err == nil {
+				t.Fatal("got nil, expected a conflict error")
+			}
+
+			retryable, ok := err.(rpc.RetryableError)
+			if !ok {
+				t.Fatalf("got %T, expected the returned error to implement rpc.RetryableError", err)
+			}
+			if !retryable.CanRetry() {
+				t.Error("got CanRetry false, expected the director to be told it can retry")
+			}
+			if !strings.Contains(err.Error(), "the object has been modified") {
+				t.Errorf("got %q, expected the underlying conflict to survive in the message", err)
+			}
+		})
 	}
 }

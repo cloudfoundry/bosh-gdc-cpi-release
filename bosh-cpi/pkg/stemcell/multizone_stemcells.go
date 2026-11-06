@@ -99,7 +99,7 @@ func (s *MultizoneStemcells) CreateStemcell(imagePath string, stemcellCloudProps
 	ctx := context.Background()
 	for zone, stemcell := range s.zonalStemcells {
 		if zone == s.leaderZone {
-			s.logger.Info("Skipping leader zone %q stemcell image check", zone)
+			s.logger.Info("CreateStemcell", "Skipping leader zone %q stemcell image check", zone)
 			continue
 		}
 		s.logger.Info("CreateStemcell", "Confirm stemcell %q exists in zone %q", stemcellCID.AsString(), zone)
