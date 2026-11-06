@@ -141,7 +141,6 @@ func (w *Waiter) checkDeleted(
 		w.Logger.Info("waiter", "initial check failed", err)
 	}
 
-	// Poll every 5 minutes
 	for {
 		select {
 		case <-ctx.Done():

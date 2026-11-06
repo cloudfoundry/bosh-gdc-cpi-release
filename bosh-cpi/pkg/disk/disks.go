@@ -271,7 +271,8 @@ func (d *Disks) AttachDiskV2(vmCID apiv1.VMCID, diskCID apiv1.DiskCID) (apiv1.Di
 	if !d.useDiskHotplug {
 		if !stopped {
 			if err := d.vmService.Stop(ctx, vm); err != nil {
-				return apiv1.DiskHint{}, bosherr.Wrapf(err, "stop VM %s", vm.Name)
+				// Stop already names the VM; re-wrapping here would duplicate the prefix.
+				return apiv1.DiskHint{}, err
 			}
 			defer func() {
 				if !startedExplicitly {
@@ -328,7 +329,8 @@ func (d *Disks) AttachDiskV2(vmCID apiv1.VMCID, diskCID apiv1.DiskCID) (apiv1.Di
 		// knows it doesn't need to start the VM a second time.
 		if !d.useMetadataServer {
 			if err := d.vmService.Start(ctx, vm); err != nil {
-				return apiv1.DiskHint{}, bosherr.Wrapf(err, "start vm %s", vm.Name)
+				// Start already names the VM; re-wrapping here would duplicate the prefix.
+				return apiv1.DiskHint{}, err
 			}
 			startedExplicitly = true
 			if stopped {
@@ -409,7 +411,8 @@ func (d *Disks) DetachDisk(vmCID apiv1.VMCID, diskCID apiv1.DiskCID) error {
 	if !d.useDiskHotplug {
 		if !stopped {
 			if err := d.vmService.Stop(ctx, vm); err != nil {
-				return bosherr.Wrapf(err, "stop VM %s", vm.Name)
+				// Stop already names the VM; re-wrapping here would duplicate the prefix.
+				return err
 			}
 			defer func() {
 				if !startedExplicitly {
@@ -460,7 +463,8 @@ func (d *Disks) DetachDisk(vmCID apiv1.VMCID, diskCID apiv1.DiskCID) error {
 		// knows it doesn't need to start the VM a second time.
 		if !d.useMetadataServer {
 			if err := d.vmService.Start(ctx, vm); err != nil {
-				return bosherr.Wrapf(err, "start vm %s", vm.Name)
+				// Start already names the VM; re-wrapping here would duplicate the prefix.
+				return err
 			}
 			startedExplicitly = true
 			if stopped {
@@ -521,7 +525,8 @@ func (d *Disks) SetDiskMetadata(cid apiv1.DiskCID, metadata apiv1.DiskMeta) erro
 	// Set metadata with length violations against kubernetes labels to kubernetes annotations
 	filteredMetadataMap := util.GetMetadataWithLengthViolation(metadataMap)
 	if err := d.setDiskMetadataInAnnotations(ctx, disk, filteredMetadataMap); err != nil {
-		return fmt.Errorf("update disk %s with metadata: %w", disk.Name, err)
+		// Already carries the disk name and any retryable hint.
+		return err
 	}
 
 	// Patch BOSH set disk metadata which can have characters kubernetes labels doesn't accept, e.g.,
@@ -547,6 +552,12 @@ func (d *Disks) SetDiskMetadata(cid apiv1.DiskCID, metadata apiv1.DiskMeta) erro
 
 	if !reflect.DeepEqual(oldLabels, disk.ObjectMeta.Labels) {
 		if err = d.cloudClient.Update(ctx, disk); err != nil {
+			if apierrors.IsConflict(err) {
+				return bosherr.Err{
+					Message:   fmt.Errorf("update disk %s with metadata: %w", disk.Name, err),
+					Retryable: true,
+				}
+			}
 			return fmt.Errorf("update disk %s with metadata: %w", disk.Name, err)
 		}
 	} else {
@@ -580,6 +591,12 @@ func (d *Disks) setDiskMetadataInAnnotations(ctx context.Context, disk *vmv1.Vir
 
 	if !reflect.DeepEqual(oldAnnotations, disk.ObjectMeta.Annotations) {
 		if err := d.cloudClient.Update(ctx, disk); err != nil {
+			if apierrors.IsConflict(err) {
+				return bosherr.Err{
+					Message:   fmt.Errorf("update disk %s with metadata: %w", disk.Name, err),
+					Retryable: true,
+				}
+			}
 			return fmt.Errorf("update disk %s with metadata: %w", disk.Name, err)
 		}
 	} else {

@@ -2200,3 +2200,56 @@ func TestDetachDisk_HotplugWaitEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// conflictOnUpdateClient serves reads normally but rejects every update with a
+// 409, standing in for a controller that touches the disk between our read and
+// our write.
+type conflictOnUpdateClient struct {
+	client.Client
+}
+
+func (c conflictOnUpdateClient) Update(_ context.Context, obj client.Object, _ ...client.UpdateOption) error {
+	return apierrors.NewConflict(
+		schema.GroupResource{Group: "virtualmachine.gdc.goog", Resource: "virtualmachinedisks"},
+		obj.GetName(),
+		errors.New("the object has been modified; please apply your changes to the latest version and try again"),
+	)
+}
+
+func TestSetDiskMetadata_ConflictReachesDirectorAsRetryable(t *testing.T) {
+	// SetDiskMetadata writes with client.Update, which sends a resourceVersion
+	// precondition and so can lose a race with the VM controller. That is a
+	// transient condition, so the director has to be told it may retry rather
+	// than failing the deploy.
+	diskID := "disk"
+	longStr := "abvxcnbhteafuximxetbxvuyddcghlnqmkwlvebchkfuyyuybbaepbzgpdcposlnz"
+
+	testCases := map[string]struct {
+		disk     *vmv1.VirtualMachineDisk
+		metadata map[string]interface{}
+	}{
+		"labels path":      {disk: virtualMachineDisk(diskID, withLabels(nil)), metadata: map[string]interface{}{"key1": "value1"}},
+		"annotations path": {disk: virtualMachineDisk(diskID, withAnnotations(nil)), metadata: map[string]interface{}{"key1": longStr}},
+	}
+
+	for id, tc := range testCases {
+		t.Run(id, func(t *testing.T) {
+			c := conflictOnUpdateClient{test.FakeClient(tc.disk)}
+			f := service.NewCPIFinder(c, projectID)
+			disks := NewDisks(c, projectID, f, logger, uuidGen, &statefulMockAgentService{}, mock.NewMockWaiter(c, projectID), &mockVMService{}, &test.Timeout, false, true, false, &statefulMockMetadataClient{})
+
+			err := disks.SetDiskMetadata(apiv1.NewDiskCID(diskID), apiv1.NewDiskMeta(tc.metadata))
+			if err == nil {
+				t.Fatal("got nil, expected a conflict error")
+			}
+
+			retryable, ok := err.(rpc.RetryableError)
+			if !ok {
+				t.Fatalf("got %T, expected the returned error to implement rpc.RetryableError", err)
+			}
+			if !retryable.CanRetry() {
+				t.Error("got CanRetry false, expected the director to be told it can retry")
+			}
+		})
+	}
+}
