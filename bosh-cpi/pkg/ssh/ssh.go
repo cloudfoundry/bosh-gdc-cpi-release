@@ -80,6 +80,7 @@ func (*execCommandProvider) Command(name string, arg ...string) *exec.Cmd {
 
 type fileSystemProvider interface {
 	Stat(fileName string) (os.FileInfo, error)
+	Remove(fileName string) error
 	// Lock takes an exclusive advisory lock guarding fileName against other
 	// processes and returns the function that releases it.
 	Lock(fileName string) (unlock func(), err error)
@@ -89,6 +90,10 @@ type execFileSystemProvider struct{}
 
 func (*execFileSystemProvider) Stat(fileName string) (os.FileInfo, error) {
 	return os.Stat(fileName)
+}
+
+func (*execFileSystemProvider) Remove(fileName string) error {
+	return os.Remove(fileName)
 }
 
 func (*execFileSystemProvider) Lock(fileName string) (func(), error) {
@@ -335,13 +340,12 @@ func sshKeyPath(keyFileName string, cmdProvider commandProvider, fsProvider file
 	}
 
 	// Once the pair exists it never changes, so the common case needs no locking
-	// and leaves no lock file behind. Both halves have to be checked: ssh-keygen
-	// writes the private key first, and Initialize reads the public key as soon
-	// as this returns, so treating the private key alone as proof would hand
-	// back a path whose public half is still being written.
-	_, privateErr := fsProvider.Stat(sshKeyPath)
-	_, publicErr := fsProvider.Stat(sshKeyPath + pubKeyFileSuffix)
-	if privateErr == nil && publicErr == nil {
+	// and leaves no lock file behind.
+	complete, err := keyPairComplete(sshKeyPath, fsProvider)
+	if err != nil {
+		return "", err
+	}
+	if complete {
 		return sshKeyPath, nil
 	}
 
@@ -359,13 +363,46 @@ func sshKeyPath(keyFileName string, cmdProvider commandProvider, fsProvider file
 	}
 	defer unlock()
 
-	if _, err := fsProvider.Stat(sshKeyPath); err != nil {
-		if !os.IsNotExist(err) {
-			return "", fmt.Errorf("check ssh key file %q: %w", keyFileName, err)
-		}
-		if out, err := cmdProvider.Command("ssh-keygen", "-t", "rsa", "-b", "4096", "-C", DefaultSSHUser, "-f", sshKeyPath, "-q", "-N", "").CombinedOutput(); err != nil {
-			return "", fmt.Errorf("generate ssh key file %q: %w\n(%s)", sshKeyPath, err, out)
+	// Re-check under the lock, since we may have queued behind the process that
+	// generated the pair.
+	complete, err = keyPairComplete(sshKeyPath, fsProvider)
+	if err != nil {
+		return "", err
+	}
+	if complete {
+		return sshKeyPath, nil
+	}
+
+	// Anything surviving to here is a partial pair left by a process that died
+	// between ssh-keygen's two writes. It has to go: ssh-keygen would refuse to
+	// overwrite the private key, and a private key with no public half looks
+	// complete to the check above, so leaving it would wedge every later run.
+	for _, path := range []string{sshKeyPath, sshKeyPath + pubKeyFileSuffix} {
+		if err := fsProvider.Remove(path); err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("remove incomplete ssh key file %q: %w", path, err)
 		}
 	}
+
+	if out, err := cmdProvider.Command("ssh-keygen", "-t", "rsa", "-b", "4096", "-C", DefaultSSHUser, "-f", sshKeyPath, "-q", "-N", "").CombinedOutput(); err != nil {
+		return "", fmt.Errorf("generate ssh key file %q: %w\n(%s)", sshKeyPath, err, out)
+	}
+
 	return sshKeyPath, nil
+}
+
+// keyPairComplete reports whether both halves of the key pair are on disk.
+// A private key on its own is not enough: ssh-keygen writes it before the
+// public key, and Initialize reads the public key immediately.
+func keyPairComplete(sshKeyPath string, fsProvider fileSystemProvider) (bool, error) {
+	for _, path := range []string{sshKeyPath, sshKeyPath + pubKeyFileSuffix} {
+		if _, err := fsProvider.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				return false, nil
+			}
+
+			return false, fmt.Errorf("check ssh key file %q: %w", path, err)
+		}
+	}
+
+	return true, nil
 }

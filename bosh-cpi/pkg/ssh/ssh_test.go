@@ -253,6 +253,10 @@ func (f *mockFileSystemProvider) Stat(filePath string) (os.FileInfo, error) {
 	return nil, nil
 }
 
+func (f *mockFileSystemProvider) Remove(string) error {
+	return nil
+}
+
 func (f *mockFileSystemProvider) Lock(string) (func(), error) {
 	return func() {}, nil
 }
@@ -417,5 +421,48 @@ func TestSSHKeyPath_WaitsForCompleteKeyPair(t *testing.T) {
 
 	if err := <-generated; err != nil {
 		t.Errorf("unexpected error from the generating caller: %v", err)
+	}
+}
+
+func TestSSHKeyPath_RecoversFromInterruptedGeneration(t *testing.T) {
+	// A CPI killed between ssh-keygen's two writes leaves a private key with no
+	// public half. That used to wedge the director permanently: the private key
+	// satisfied the existence check, so generation was skipped, and Initialize
+	// then failed reading the missing public key on every subsequent run.
+	testCases := map[string]struct {
+		seed map[string]string
+	}{
+		"orphaned private key": {
+			seed: map[string]string{"": "orphaned private key\n"},
+		},
+		"orphaned public key": {
+			seed: map[string]string{pubKeyFileSuffix: "orphaned public key\n"},
+		},
+	}
+
+	for id, tc := range testCases {
+		t.Run(id, func(t *testing.T) {
+			keyPath := filepath.Join(t.TempDir(), "ssh_key")
+			for suffix, content := range tc.seed {
+				if err := os.WriteFile(keyPath+suffix, []byte(content), 0o600); err != nil {
+					t.Fatalf("seed %q: %v", keyPath+suffix, err)
+				}
+			}
+
+			got, err := sshKeyPath(keyPath, &fakeKeygenRunner{}, &execFileSystemProvider{}, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			for _, path := range []string{got, got + pubKeyFileSuffix} {
+				content, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("expected %q to exist after recovery: %v", path, err)
+				}
+				if strings.Contains(string(content), "orphaned") {
+					t.Errorf("%q still holds the orphaned content, expected a freshly generated key", path)
+				}
+			}
+		})
 	}
 }
