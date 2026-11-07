@@ -110,10 +110,16 @@ func (f Factory) multiZoneFactory() (apiv1.CPI, error) {
 			ProjectID: projectId,
 		}
 		zonalVMAccessServices[zone] = vmservice.NewVMAccessRequestService(zonalKubeClient, projectId, ssh.DefaultSSHUser, waiter)
-		sshManager, err := ssh.Initialize(f.config.GDC.DisableSSHProxy, f.config.GDC.UseTmpDirForSSHKey, zonalKubeClient, projectId, *waiter, zonalVMAccessServices[zone])
-		if err != nil {
-			return nil, fmt.Errorf("initialize ssh config: %w", err)
-		}
+		// Deferred because only agent settings transfers need SSH. Setting it up
+		// here would make every stemcell, disk and info call depend on key
+		// generation they never use.
+		sshManager := ssh.NewLazyManager(func() (*ssh.Manager, error) {
+			manager, err := ssh.Initialize(f.config.GDC.DisableSSHProxy, f.config.GDC.UseTmpDirForSSHKey, zonalKubeClient, projectId, *waiter, zonalVMAccessServices[zone])
+			if err != nil {
+				return nil, fmt.Errorf("initialize ssh config: %w", err)
+			}
+			return manager, nil
+		})
 		agentEnvService := &agent.AgentEnvService{
 			SSHManager: sshManager,
 		}

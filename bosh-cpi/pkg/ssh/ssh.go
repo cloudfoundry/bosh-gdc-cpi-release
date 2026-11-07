@@ -23,6 +23,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,6 +42,10 @@ const (
 	defaultTempDir = "/tmp"
 	// The default file name for the ssh private key.
 	defaultKeyFileName = "bosh-gdch-vm-access"
+	// Suffix of the sidecar file used to serialize ssh key generation.
+	lockFileSuffix = ".lock"
+	// Suffix ssh-keygen gives the public half of the pair.
+	pubKeyFileSuffix = ".pub"
 
 	sshPort = "22"
 )
@@ -74,12 +80,82 @@ func (*execCommandProvider) Command(name string, arg ...string) *exec.Cmd {
 
 type fileSystemProvider interface {
 	Stat(fileName string) (os.FileInfo, error)
+	// Lock takes an exclusive advisory lock guarding fileName against other
+	// processes and returns the function that releases it.
+	Lock(fileName string) (unlock func(), err error)
 }
 
 type execFileSystemProvider struct{}
 
 func (*execFileSystemProvider) Stat(fileName string) (os.FileInfo, error) {
 	return os.Stat(fileName)
+}
+
+func (*execFileSystemProvider) Lock(fileName string) (func(), error) {
+	// flock lives on the open file description, so separate opens contend even
+	// within one process, and the kernel drops the lock when the holder exits.
+	// A CPI killed mid-generation therefore cannot wedge later invocations.
+	lockFile, err := os.OpenFile(fileName+lockFileSuffix, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file for %q: %w", fileName, err)
+	}
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		lockFile.Close()
+		return nil, fmt.Errorf("lock %q: %w", lockFile.Name(), err)
+	}
+
+	return func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}, nil
+}
+
+// LazyManager defers Initialize until an operation actually needs SSH.
+//
+// bosh-cpi-go constructs the entire CPI before it looks at which method was
+// requested, so eager setup made every call pay for SSH, including stemcell,
+// disk and info calls that never reach a VM. Setup generates an RSA key pair
+// and reads it back from disk, which turned unrelated operations into a
+// failure surface: a clean-up task deleting stemcells could fail inside
+// ssh-keygen, and the dispatcher reports any such failure as the thoroughly
+// misleading "CPI must report api_version via info".
+type LazyManager struct {
+	initialize func() (*Manager, error)
+
+	once    sync.Once
+	manager *Manager
+	err     error
+}
+
+func NewLazyManager(initialize func() (*Manager, error)) *LazyManager {
+	return &LazyManager{initialize: initialize}
+}
+
+func (l *LazyManager) get() (*Manager, error) {
+	l.once.Do(func() {
+		l.manager, l.err = l.initialize()
+	})
+
+	return l.manager, l.err
+}
+
+func (l *LazyManager) Upload(ctx context.Context, vmName, vmIP string, sourceFile string, targetFile string) error {
+	manager, err := l.get()
+	if err != nil {
+		return err
+	}
+
+	return manager.Upload(ctx, vmName, vmIP, sourceFile, targetFile)
+}
+
+func (l *LazyManager) Download(ctx context.Context, vmName, vmIP, sourceFile string) ([]byte, error) {
+	manager, err := l.get()
+	if err != nil {
+		return nil, err
+	}
+
+	return manager.Download(ctx, vmName, vmIP, sourceFile)
 }
 
 type dialer interface {
@@ -117,7 +193,7 @@ func Initialize(disableProxy, useTmpDir bool, cloudClient client.Client,
 		return nil, fmt.Errorf("set up SSH key: %w", err)
 	}
 
-	publicKeyFile := fmt.Sprintf("%s.pub", fileName)
+	publicKeyFile := fileName + pubKeyFileSuffix
 	bs, err := os.ReadFile(publicKeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("read public key file %q: %w", publicKeyFile, err)
@@ -174,21 +250,44 @@ func (m *Manager) Upload(ctx context.Context, vmName, vmIP string, sourceFile st
 	args = append(args, "-o", "StrictHostKeyChecking=no")
 	args = append(args, "-i", m.keyPath, sourceFile, target)
 
-	var out []byte
-	var cmdErr error
-	msg := "upload env setting"
-
-	// Wait till command success.
-	// VM reboots may affect vm to accept traffic even when vm is restarted and running.
-	// Wait and retry till timeout or vm can accept the connection.
-	if err := m.waiter.WaitForSuccess(ctx, msg, waitCMDSuccess, func(ctx context.Context) error {
-		out, cmdErr = m.cmdProvider.Command("scp", args...).CombinedOutput()
-		return cmdErr
-	}); err != nil {
+	out, err := m.runUntilSuccess(ctx, "upload env setting", "scp", args)
+	if err != nil {
 		return fmt.Errorf("scp (%+v): %w (%s)", args, err, out)
 	}
 
 	return nil
+}
+
+// runUntilSuccess retries name until it exits zero or the wait expires, and
+// returns the combined output of the last attempt that produced any.
+//
+// The output is guarded by a mutex because the retrying goroutine can outlive
+// WaitForSuccess: when the wait expires, an attempt may still be in flight and
+// about to record its output, so reading it unsynchronized in the caller's
+// error path is a data race.
+func (m *Manager) runUntilSuccess(ctx context.Context, msg, name string, args []string) ([]byte, error) {
+	var (
+		mu  sync.Mutex
+		out []byte
+	)
+
+	err := m.waiter.WaitForSuccess(ctx, msg, waitCMDSuccess, func(context.Context) error {
+		// Wait till command success.
+		// VM reboots may affect vm to accept traffic even when vm is restarted and running.
+		// Wait and retry till timeout or vm can accept the connection.
+		combined, cmdErr := m.cmdProvider.Command(name, args...).CombinedOutput()
+
+		mu.Lock()
+		defer mu.Unlock()
+		out = combined
+
+		return cmdErr
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	return out, err
 }
 
 // Download copies a remote file to a local byte slice over scp.
@@ -210,17 +309,8 @@ func (m *Manager) Download(ctx context.Context, vmName, vmIP, sourceFile string)
 	target := fmt.Sprintf("%s@%s", DefaultSSHUser, vmIP)
 	args = append(args, "-q", "-i", m.keyPath, target, "cat", sourceFile)
 
-	var out []byte
-	var cmdErr error
-	msg := "download env setting"
-
-	// Wait till command success.
-	// VM reboots may affect vm to accept traffic even when vm is restarted and running.
-	// Wait and retry till timeout or vm can accept the connection.
-	if err := m.waiter.WaitForSuccess(ctx, msg, waitCMDSuccess, func(ctx context.Context) error {
-		out, cmdErr = m.cmdProvider.Command("ssh", args...).CombinedOutput()
-		return cmdErr
-	}); err != nil {
+	out, err := m.runUntilSuccess(ctx, "download env setting", "ssh", args)
+	if err != nil {
 		return nil, fmt.Errorf("ssh (%+v): %w (%s)", args, err, out)
 	}
 
@@ -243,6 +333,31 @@ func sshKeyPath(keyFileName string, cmdProvider commandProvider, fsProvider file
 		// starts up in the user's working machine
 		sshKeyPath = fmt.Sprintf("%s/%s", defaultTempDir, filepath.Base(keyFileName))
 	}
+
+	// Once the pair exists it never changes, so the common case needs no locking
+	// and leaves no lock file behind. Both halves have to be checked: ssh-keygen
+	// writes the private key first, and Initialize reads the public key as soon
+	// as this returns, so treating the private key alone as proof would hand
+	// back a path whose public half is still being written.
+	_, privateErr := fsProvider.Stat(sshKeyPath)
+	_, publicErr := fsProvider.Stat(sshKeyPath + pubKeyFileSuffix)
+	if privateErr == nil && publicErr == nil {
+		return sshKeyPath, nil
+	}
+
+	// Creating it is another matter. The director runs several CPI processes at
+	// once and they all share this path, so an existence check cannot stand on
+	// its own: two processes can both find the key missing and both run
+	// ssh-keygen. ssh-keygen refuses to overwrite an existing key and asks for
+	// confirmation on stdin, which the CPI has already read to EOF, so the loser
+	// of that race exits 1 and fails the whole CPI call. Holding a lock across
+	// the re-check and the generation makes the loser wait and then observe a
+	// complete key pair instead of racing to recreate it.
+	unlock, err := fsProvider.Lock(sshKeyPath)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 
 	if _, err := fsProvider.Stat(sshKeyPath); err != nil {
 		if !os.IsNotExist(err) {
