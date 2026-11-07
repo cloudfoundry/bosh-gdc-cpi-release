@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -251,10 +253,216 @@ func (f *mockFileSystemProvider) Stat(filePath string) (os.FileInfo, error) {
 	return nil, nil
 }
 
+func (f *mockFileSystemProvider) Remove(string) error {
+	return nil
+}
+
+func (f *mockFileSystemProvider) Lock(string) (func(), error) {
+	return func() {}, nil
+}
+
 type mockConnChecker struct {
 	err error
 }
 
 func (mc *mockConnChecker) ensureSSHConnection(ctx context.Context, host string, port string, timeout wait.Waiting) error {
 	return mc.err
+}
+
+// fakeKeygenRunner stands in for ssh-keygen, including the behaviour that
+// caused the outage: it refuses to overwrite an existing private key and exits
+// non-zero, exactly as the real tool does when its confirmation prompt reaches
+// a closed stdin. The sleep widens the window between the existence check and
+// the write so the race is hit reliably rather than occasionally.
+type fakeKeygenRunner struct {
+	calls atomic.Int64
+}
+
+var _ commandProvider = &fakeKeygenRunner{}
+
+// keygenTargetPath pulls the -f argument back out of a simulated ssh-keygen
+// invocation.
+func keygenTargetPath(arg []string) string {
+	for i, a := range arg {
+		if a == "-f" && i+1 < len(arg) {
+			return arg[i+1]
+		}
+	}
+
+	return ""
+}
+
+func (f *fakeKeygenRunner) Command(_ string, arg ...string) *exec.Cmd {
+	keyPath := keygenTargetPath(arg)
+
+	// Real ssh-keygen computes the key first and only refuses to overwrite when
+	// it goes to write, so the window is the generation time, not the check.
+	// Staggering that time by call makes the losers deterministic rather than
+	// leaving the outcome to the scheduler.
+	delay := fmt.Sprintf("%.2f", float64(f.calls.Add(1)-1)*0.1)
+
+	return exec.Command("sh", "-c", "sleep "+delay+"; "+fmt.Sprintf(
+		`if [ -e %[1]q ]; then echo "%[1]s already exists."; exit 1; fi; `+
+			`echo private > %[1]q; echo public > %[1]q.pub`, keyPath))
+}
+
+func TestSSHKeyPath_ConcurrentCallersShareOneKey(t *testing.T) {
+	// Reproduces a director cold start, where several CPI processes build their
+	// factory at once and each tries to create the same missing key file.
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ssh_key")
+
+	const callers = 8
+	runner := &fakeKeygenRunner{}
+	var wg sync.WaitGroup
+	errCh := make(chan error, callers)
+
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := sshKeyPath(keyPath, runner, &execFileSystemProvider{}, false)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if got != keyPath {
+				errCh <- fmt.Errorf("got key path %q, expected %q", got, keyPath)
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("concurrent caller failed: %v", err)
+	}
+
+	for _, path := range []string{keyPath, keyPath + ".pub"} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected %q to exist after generation: %v", path, err)
+		}
+	}
+}
+
+func TestLazyManager_DefersInitializationUntilUsed(t *testing.T) {
+	// Stemcell, disk and info calls build the factory but never transfer agent
+	// settings, so they must neither pay for SSH setup nor fail on it.
+	initializations := 0
+	lazy := NewLazyManager(func() (*Manager, error) {
+		initializations++
+		return nil, errors.New("ssh setup exploded")
+	})
+
+	if initializations != 0 {
+		t.Fatalf("got %d initializations, expected none before first use", initializations)
+	}
+
+	if _, err := lazy.Download(context.Background(), vmName, "1.2.3.4", "foo.txt"); err == nil {
+		t.Error("got nil from Download, expected the deferred setup error to surface")
+	}
+	if err := lazy.Upload(context.Background(), vmName, "1.2.3.4", "source.txt", "target.txt"); err == nil {
+		t.Error("got nil from Upload, expected the deferred setup error to surface")
+	}
+
+	if initializations != 1 {
+		t.Errorf("got %d initializations, expected the first result to be cached", initializations)
+	}
+}
+
+// splitWriteKeygenRunner writes the private key, pauses, then writes the public
+// key, mirroring the order real ssh-keygen uses.
+type splitWriteKeygenRunner struct {
+	gap time.Duration
+}
+
+var _ commandProvider = splitWriteKeygenRunner{}
+
+func (r splitWriteKeygenRunner) Command(_ string, arg ...string) *exec.Cmd {
+	return exec.Command("sh", "-c", fmt.Sprintf(
+		`echo private > %[1]q; sleep %[2]s; echo public > %[1]q.pub`,
+		keygenTargetPath(arg), fmt.Sprintf("%.2f", r.gap.Seconds())))
+}
+
+func TestSSHKeyPath_WaitsForCompleteKeyPair(t *testing.T) {
+	// Initialize reads the public key the instant sshKeyPath returns, so a
+	// caller that arrives after the private key is written but before the
+	// public key is must keep waiting rather than report a half-written pair.
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "ssh_key")
+	runner := splitWriteKeygenRunner{gap: 500 * time.Millisecond}
+
+	generated := make(chan error, 1)
+	go func() {
+		_, err := sshKeyPath(keyPath, runner, &execFileSystemProvider{}, false)
+		generated <- err
+	}()
+
+	// Land inside the gap: the private key is on disk, the public key is not.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(keyPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the private key to appear")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	got, err := sshKeyPath(keyPath, runner, &execFileSystemProvider{}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(got + pubKeyFileSuffix); err != nil {
+		t.Errorf("sshKeyPath returned %q while its public key was still missing: %v", got, err)
+	}
+
+	if err := <-generated; err != nil {
+		t.Errorf("unexpected error from the generating caller: %v", err)
+	}
+}
+
+func TestSSHKeyPath_RecoversFromInterruptedGeneration(t *testing.T) {
+	// A CPI killed between ssh-keygen's two writes leaves a private key with no
+	// public half. That used to wedge the director permanently: the private key
+	// satisfied the existence check, so generation was skipped, and Initialize
+	// then failed reading the missing public key on every subsequent run.
+	testCases := map[string]struct {
+		seed map[string]string
+	}{
+		"orphaned private key": {
+			seed: map[string]string{"": "orphaned private key\n"},
+		},
+		"orphaned public key": {
+			seed: map[string]string{pubKeyFileSuffix: "orphaned public key\n"},
+		},
+	}
+
+	for id, tc := range testCases {
+		t.Run(id, func(t *testing.T) {
+			keyPath := filepath.Join(t.TempDir(), "ssh_key")
+			for suffix, content := range tc.seed {
+				if err := os.WriteFile(keyPath+suffix, []byte(content), 0o600); err != nil {
+					t.Fatalf("seed %q: %v", keyPath+suffix, err)
+				}
+			}
+
+			got, err := sshKeyPath(keyPath, &fakeKeygenRunner{}, &execFileSystemProvider{}, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			for _, path := range []string{got, got + pubKeyFileSuffix} {
+				content, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("expected %q to exist after recovery: %v", path, err)
+				}
+				if strings.Contains(string(content), "orphaned") {
+					t.Errorf("%q still holds the orphaned content, expected a freshly generated key", path)
+				}
+			}
+		})
+	}
 }
