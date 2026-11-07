@@ -1,5 +1,31 @@
 [
   {
+    "id": "42398519192",
+    "run_number": "#19",
+    "timestamp": "2026-11-07T23:57:36Z",
+    "status": "failure",
+    "version": "v0.1.3",
+    "release_mode": "release",
+    "skip_concourse": false,
+    "sha256": "e90d7fda2eb9094b1cb34746a26afaa8066453455224b898c56dfcd19368adfb",
+    "commit": "e4aa028",
+    "commit_url": "https://github.com/cloudfoundry/bosh-gdc-cpi-release/commit/e4aa028",
+    "duration": "364m 4s",
+    "duration_s": 21844,
+    "trigger": "workflow_dispatch",
+    "actor": "gowrisankar22",
+    "url": "https://github.com/cloudfoundry/bosh-gdc-cpi-release/actions/runs/42398519192",
+    "release_url": "https://github.com/cloudfoundry/bosh-gdc-cpi-release/releases/tag/v0.1.3",
+    "concourse_log": "gs://cfbosh-cicd/cicd-deployment-logs/",
+    "beta_gcs_uri": "gs://cfbosh-cicd/cpi_releases/bosh_gdch_cpi_release_0.1.3.tgz",
+    "stages": {
+      "build_candidate": "passed",
+      "concourse": "failed",
+      "vuln_scan": "passed",
+      "release": "skipped"
+    }
+  },
+  {
     "id": "42281691644",
     "run_number": "#18",
     "timestamp": "2026-11-07T01:44:32Z",
