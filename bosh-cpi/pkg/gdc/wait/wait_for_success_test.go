@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -327,9 +328,9 @@ func TestWaitForSuccessRunsOnConsistentEveryInterval(t *testing.T) {
 		Wait:  500 * time.Millisecond,
 	}
 
-	var iterations int
+	var iterations atomic.Int32
 	f := func(ctx context.Context) error {
-		iterations++
+		iterations.Add(1)
 		<-ctx.Done()
 		return errors.New("error")
 	}
@@ -338,8 +339,8 @@ func TestWaitForSuccessRunsOnConsistentEveryInterval(t *testing.T) {
 		t.Fatalf("WaitForSuccess error = %v; want non-nil", err)
 	}
 
-	if iterations != wantIterations {
-		t.Errorf("With long running callback, WaitForSuccess called func %d times; expected %d iterations", iterations, wantIterations)
+	if got := int(iterations.Load()); got != wantIterations {
+		t.Errorf("With long running callback, WaitForSuccess called func %d times; expected %d iterations", got, wantIterations)
 	}
 }
 
@@ -354,9 +355,12 @@ func TestWaitForSuccessRetriesInternalContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 
-	var called int
+	// f runs on RetryOnError's goroutine, which may still be executing when
+	// the total timeout fires and WaitForSuccess returns; use an atomic so the
+	// final read below does not race with that last increment.
+	var called atomic.Int32
 	f := func(ctx context.Context) error {
-		called++
+		called.Add(1)
 		ctx, cancel := context.WithCancel(ctx)
 		cancel()
 		<-ctx.Done()
@@ -367,8 +371,8 @@ func TestWaitForSuccessRetriesInternalContextCanceled(t *testing.T) {
 	if err == nil {
 		t.Errorf("WaitForSuccess err = %v: expected non-nil", err)
 	}
-	if called < 2 {
-		t.Errorf("With internal context canceled, WaitForSuccess called func %d times; expected 2 or more retries", called)
+	if got := called.Load(); got < 2 {
+		t.Errorf("With internal context canceled, WaitForSuccess called func %d times; expected 2 or more retries", got)
 	}
 }
 
@@ -383,9 +387,10 @@ func TestWaitForSuccessRetriesInternalContextTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 
-	var called int
+	// See TestWaitForSuccessRetriesInternalContextCanceled for why this is atomic.
+	var called atomic.Int32
 	f := func(ctx context.Context) error {
-		called++
+		called.Add(1)
 		ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 		defer cancel()
 		<-ctx.Done()
@@ -396,8 +401,8 @@ func TestWaitForSuccessRetriesInternalContextTimeout(t *testing.T) {
 	if err == nil {
 		t.Errorf("WaitForSuccess err = %v: expected non-nil", err)
 	}
-	if called < 2 {
-		t.Errorf("With internal context timeout, WaitForSuccess called func %d times; expected 2 or more retries", called)
+	if got := called.Load(); got < 2 {
+		t.Errorf("With internal context timeout, WaitForSuccess called func %d times; expected 2 or more retries", got)
 	}
 }
 
