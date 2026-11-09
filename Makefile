@@ -23,16 +23,23 @@ VERSION       ?= $(shell git describe --tags --always --dirty 2>/dev/null || ech
 # Override for arm64 stemcells: make build LINUX_ARCH=arm64
 LINUX_ARCH    ?= amd64
 
-GO_VERSION    ?= 1.26.10
+# Required Go toolchain version: the `go` directive in go.mod is the single source of truth.
+GO_VERSION    ?= $(shell awk '/^go [0-9]/ {print $$2; exit}' $(REPO_ROOT)/go.mod)
 export GOTOOLCHAIN ?= local
 
-# Verify Go version is at least 1.24 (required by go.mod 1.25.0)
+# OS/arch of the hermetic Go toolchain downloaded by ensure-go (linux/darwin, amd64/arm64),
+# derived from the host so that a macOS or arm64 machine does not end up with a linux-amd64 `go`
+# first in PATH ("exec format error").
+GO_HOST_OS    ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
+GO_HOST_ARCH  ?= $(shell uname -m | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/')
+
+# Verify that the Go found in PATH satisfies the go.mod `go` directive (major.minor.patch).
+# With GOTOOLCHAIN=local an older patch release (e.g. 1.26.8 vs go.mod 1.26.10) fails with
+# "go.mod requires go >= X (running go Y; GOTOOLCHAIN=local)", so compare the full version.
 GO_VERSION_OK := $(shell \
 	if command -v go >/dev/null 2>&1; then \
-		v=$$(go version 2>/dev/null | awk '{print $$3}' | sed 's/go//'); \
-		major=$$(echo "$$v" | cut -d. -f1); \
-		minor=$$(echo "$$v" | cut -d. -f2); \
-		if [ "$$major" -gt 1 ] 2>/dev/null || ([ "$$major" -eq 1 ] 2>/dev/null && [ "$$minor" -ge 24 ] 2>/dev/null); then \
+		v=$$(go version 2>/dev/null | awk '{print $$3}' | sed 's/^go//'); \
+		if [ "$$(printf '%s\n%s\n' "$(GO_VERSION)" "$$v" | sort -V | head -n 1)" = "$(GO_VERSION)" ]; then \
 			echo "ok"; \
 		fi; \
 	fi)
@@ -46,12 +53,18 @@ endif
 # Default target
 all: ensure-go pre-check test build
 
-# Ensure Go >= 1.24 is available; bootstrap hermetic Go toolchain into .tools/go if system Go is outdated or missing
+# Ensure Go >= go.mod's `go` directive is available; bootstrap a hermetic Go toolchain into
+# .tools/go if the system Go is outdated, missing, or if a previously bootstrapped toolchain is stale.
 ensure-go:
-	@if [ -z "$(GO_VERSION_OK)" ] && [ ! -x "$(GO_DIR)/bin/go" ]; then \
-		echo "[INFO] Go >= 1.24 not found in environment (found $$(command -v go >/dev/null 2>&1 && go version 2>/dev/null || echo 'none')). Downloading Go $(GO_VERSION)..."; \
+	@if [ -z "$(GO_VERSION_OK)" ] && [ "$$($(GO_DIR)/bin/go version 2>/dev/null | awk '{print $$3}')" != "go$(GO_VERSION)" ]; then \
+		echo "[INFO] Go >= $(GO_VERSION) not found in environment (found $$(command -v go >/dev/null 2>&1 && go version 2>/dev/null || echo 'none')). Downloading Go $(GO_VERSION)..."; \
+		case "$(GO_HOST_OS)-$(GO_HOST_ARCH)" in \
+			linux-amd64|linux-arm64|darwin-amd64|darwin-arm64) ;; \
+			*) echo "[ERROR] No hermetic Go toolchain available for $(GO_HOST_OS)/$(GO_HOST_ARCH); install Go >= $(GO_VERSION) manually."; exit 1 ;; \
+		esac; \
+		rm -rf $(GO_DIR); \
 		mkdir -p $(TOOLS_DIR); \
-		curl -fsSL https://dl.google.com/go/go$(GO_VERSION).linux-amd64.tar.gz | tar -xz -C $(TOOLS_DIR); \
+		curl -fsSL https://dl.google.com/go/go$(GO_VERSION).$(GO_HOST_OS)-$(GO_HOST_ARCH).tar.gz | tar -xz -C $(TOOLS_DIR); \
 	fi
 
 # Build CPI binaries for Linux and Darwin in bin/

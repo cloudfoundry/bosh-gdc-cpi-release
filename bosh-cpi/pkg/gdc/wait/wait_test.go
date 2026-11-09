@@ -366,7 +366,14 @@ func TestUntilDeletedWithPolling(t *testing.T) {
 	wg.Add(2)
 
 	go func() {
+		defer wg.Done()
 		fClient.watchWG.Wait()
+
+		// Wait for the poller's initial Get (object still exists) so that the
+		// deletion below is only observed by the ticker-driven poll; otherwise
+		// the initial check could already return and nobody would ever read
+		// the tick, deadlocking the test.
+		<-fClient.gets
 
 		// Delete object so next Get returns NotFound. But, fake client doesn't
 		// send deletion event to the watcher goroutine, mimicking a "hanging"
@@ -378,8 +385,6 @@ func TestUntilDeletedWithPolling(t *testing.T) {
 
 		// Trigger ticker
 		fClock.tickerChan <- time.Now()
-
-		wg.Done()
 	}()
 
 	go func() {
@@ -415,13 +420,21 @@ func TestUntilDeletedWithPollingError(t *testing.T) {
 	wg.Add(2)
 
 	go func() {
+		defer wg.Done()
 		fClient.watchWG.Wait()
 
-		// Simulate transient error on next Get
-		fClient.getErr = errors.New("transient error")
+		// Wait for the poller's initial Get (object still exists).
+		<-fClient.gets
 
-		// Trigger ticker for first poll (which will fail)
+		// Simulate transient error on next Get
+		fClient.setTransientGetError(errors.New("transient error"))
+
+		// Trigger ticker for first poll (which will fail) and wait until that
+		// Get has actually run before deleting the object; otherwise the first
+		// poll could already observe the deletion and the second tick below
+		// would block forever.
 		fClock.tickerChan <- time.Now()
+		<-fClient.gets
 
 		// Delete object so second poll finds it gone
 		err := fClient.Client.Delete(context.Background(), podObj)
@@ -431,8 +444,6 @@ func TestUntilDeletedWithPollingError(t *testing.T) {
 
 		// Trigger ticker for second poll (which should succeed)
 		fClock.tickerChan <- time.Now()
-
-		wg.Done()
 	}()
 
 	go func() {
@@ -506,6 +517,7 @@ func newFakeClient(t *testing.T, watchCount int, initObjs ...client.Object) *fak
 
 		scheme:         s,
 		watchInterface: &watchInterface{make(chan watch.Event)},
+		gets:           make(chan struct{}, 64),
 	}
 	fc.watchWG.Add(watchCount)
 
@@ -520,7 +532,27 @@ type fakeClient struct {
 	watchWG        sync.WaitGroup
 	watchInterface *watchInterface
 
-	getErr error
+	// gets receives one value after every Get call so tests can sequence
+	// themselves against the poller instead of racing with it.
+	gets chan struct{}
+
+	getErrMu sync.Mutex
+	getErr   error
+}
+
+// setTransientGetError makes the next Get call fail once with err.
+func (fc *fakeClient) setTransientGetError(err error) {
+	fc.getErrMu.Lock()
+	defer fc.getErrMu.Unlock()
+	fc.getErr = err
+}
+
+func (fc *fakeClient) takeTransientGetError() error {
+	fc.getErrMu.Lock()
+	defer fc.getErrMu.Unlock()
+	err := fc.getErr
+	fc.getErr = nil // Clear it for next time to simulate transient error
+	return err
 }
 
 func (fc *fakeClient) Watch(ctx context.Context, obj client.ObjectList,
@@ -539,9 +571,13 @@ func (fc *fakeClient) Watch(ctx context.Context, obj client.ObjectList,
 }
 
 func (fc *fakeClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	if fc.getErr != nil {
-		err := fc.getErr
-		fc.getErr = nil // Clear it for next time to simulate transient error
+	defer func() {
+		select {
+		case fc.gets <- struct{}{}:
+		default:
+		}
+	}()
+	if err := fc.takeTransientGetError(); err != nil {
 		return err
 	}
 	return fc.Client.Get(ctx, key, obj, opts...)
