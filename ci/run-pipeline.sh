@@ -332,13 +332,29 @@ trigger_and_monitor_pipeline() {
 
       # Report completion status for any previously started job builds without streaming raw worker stdout/stderr
       local finished_entries
-      finished_entries="$(echo "${cur_jobs_json}" | jq -r '.[] | select(.finished_build != null) | "\(.name):\(.finished_build.name):\(.finished_build.status)"')"
+      finished_entries="$(echo "${cur_jobs_json}" | jq -r '.[] | select(.finished_build != null) | "\(.name):\(.finished_build.name):\(.finished_build.status):\(.paused)"')"
       if [[ -n "${finished_entries}" ]]; then
-        while IFS=: read -r f_name f_build f_status; do
+        while IFS=: read -r f_name f_build f_status f_paused; do
           [[ -z "${f_name}" || -z "${f_build}" ]] && continue
           if [[ "${watched_builds}" == *" ${f_name}:${f_build} "* && "${reported_finished}" != *" ${f_name}:${f_build} "* ]]; then
             reported_finished="${reported_finished}${f_name}:${f_build} "
             echo "[INFO] Concourse job '${PIPELINE_NAME}/${f_name}' build #${f_build} finished with status '${f_status}'."
+            # Re-trigger a failed intermediate job right away (once per job) instead of waiting for the
+            # rest of the pipeline to go idle: BATs/CATs run in parallel for hours, so deferring the
+            # retry until everything else finished previously pushed the run past the GitHub job timeout.
+            # Same filters as the idle-time fallback below: only 'failed'/'errored' builds (never undo a
+            # manual abort) of unpaused jobs (a re-triggered build of a paused job would stay pending
+            # forever and keep the loop from ever going idle).
+            case "${f_status}" in
+            failed | errored)
+              if [[ "${f_paused}" != "true" && "${f_name}" != "${WAIT_JOB}" && "${f_name}" != "report-orphaned-vms" && "${retried_jobs}" != *" ${f_name} "* ]]; then
+                retried_jobs="${retried_jobs}${f_name} "
+                echo "[WARN] Concourse job '${f_name} #${f_build} (${f_status})' failed; re-triggering '${PIPELINE_NAME}/${f_name}' once..."
+                ensure_concourse_connection
+                fly -t "${FLY_TARGET}" trigger-job -j "${PIPELINE_NAME}/${f_name}" || true
+              fi
+              ;;
+            esac
           fi
         done <<<"${finished_entries}"
       fi
