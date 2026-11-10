@@ -16,8 +16,6 @@ package stemcell
 
 import (
 	"errors"
-
-	"github.com/hashicorp/go-multierror"
 )
 
 // Selected properties from cloud properties hash extracted from the stemcell tarball
@@ -31,20 +29,20 @@ type Property struct {
 }
 
 func (p *Property) validate() error {
-	var errs *multierror.Error
+	var errs error
 
 	if len(p.Name) == 0 {
-		errs = multierror.Append(errs, errors.New("must provide non-empty Name"))
+		errs = errors.Join(errs, errors.New("must provide non-empty Name"))
 	}
 	if len(p.Version) == 0 {
-		errs = multierror.Append(errs, errors.New("must provide non-empty Version"))
+		errs = errors.Join(errs, errors.New("must provide non-empty Version"))
 	}
 	if p.Infrastructure != "gdch" {
-		errs = multierror.Append(errs, errors.New("Infrastruction must be 'gdch'"))
+		errs = errors.Join(errs, errors.New("Infrastruction must be 'gdch'"))
 	}
 	if p.Hypervisor != "kvm" {
-		errs = multierror.Append(errs, errors.New("Hypervisor must be 'kvm'"))
+		errs = errors.Join(errs, errors.New("Hypervisor must be 'kvm'"))
 	}
 
-	return errs.ErrorOrNil()
+	return errs
 }

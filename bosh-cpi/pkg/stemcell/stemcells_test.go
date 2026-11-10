@@ -906,7 +906,7 @@ func createImageImport(status string) *vmv1.VirtualMachineImageImport {
 		},
 		Status: vmv1.VirtualMachineImageImportStatus{
 			Conditions: []metav1.Condition{
-				metav1.Condition{
+				{
 					Type:   "Ready",
 					Status: metav1.ConditionTrue,
 					Reason: status,

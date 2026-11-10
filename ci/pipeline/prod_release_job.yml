@@ -59,7 +59,7 @@
 
             ls cicd-deployment-artifacts-cf/
 
-            # TODO(b/442003967): Publish the qualified deliverables after the GitHub migration
+            # TODO: Publish the qualified deliverables after the GitHub migration
 
             echo "[WARN] Publishing the qualified deliverables is not implemented yet"
 

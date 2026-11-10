@@ -19,7 +19,6 @@ import (
 	"fmt"
 
 	consts "github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/consts"
-	"github.com/hashicorp/go-multierror"
 )
 
 // Defines VM GDC cloud properties for VM creation based on virtualmachine/v1 API.
@@ -120,15 +119,15 @@ type CloudNATSelector struct {
 }
 
 func (p *Property) validate() error {
-	var errs *multierror.Error
+	var errs error
 
 	if len(p.VirtualMachineType) == 0 && (p.VCPUs <= 0 || p.MemorySizeGB <= 0) {
-		errs = multierror.Append(errs, errors.New("Must provide non-empty and positive VCPUs and MemorySizeGB when VirtualMachineType is empty"))
+		errs = errors.Join(errs, errors.New("Must provide non-empty and positive VCPUs and MemorySizeGB when VirtualMachineType is empty"))
 	}
 
 	if len(p.BootDiskType) > 0 {
 		if p.BootDiskType != consts.DiskTypeStandard && p.BootDiskType != consts.DiskTypePerformance {
-			errs = multierror.Append(errs, fmt.Errorf("boot disk type must be one of either '%v' or '%v'", consts.DiskTypeStandard, consts.DiskTypePerformance))
+			errs = errors.Join(errs, fmt.Errorf("boot disk type must be one of either '%v' or '%v'", consts.DiskTypeStandard, consts.DiskTypePerformance))
 		}
 	} else if len(p.BootDiskType) == 0 {
 		// If left boot disk type is empty, set the default to Standard disk type.
@@ -136,7 +135,7 @@ func (p *Property) validate() error {
 	}
 	if len(p.EphemeralDiskType) > 0 {
 		if p.EphemeralDiskType != consts.DiskTypeStandard && p.EphemeralDiskType != consts.DiskTypePerformance {
-			errs = multierror.Append(errs, fmt.Errorf("ephemeral disk type must be one of either '%v' or '%v'", consts.DiskTypeStandard, consts.DiskTypePerformance))
+			errs = errors.Join(errs, fmt.Errorf("ephemeral disk type must be one of either '%v' or '%v'", consts.DiskTypeStandard, consts.DiskTypePerformance))
 		}
 	} else if len(p.EphemeralDiskType) == 0 {
 		// If left ephemeral disk type is left empty, set the default to Standard disk type.
@@ -144,26 +143,26 @@ func (p *Property) validate() error {
 	}
 
 	if p.BootDiskSizeGB <= 0 {
-		errs = multierror.Append(errs, errors.New("Must provide positive BootDiskSizeGB"))
+		errs = errors.Join(errs, errors.New("Must provide positive BootDiskSizeGB"))
 	}
 
 	// minimum acceptable disk size is 10GB,
 	// https://cloud.google.com/distributed-cloud/hosted/docs/latest/gdch/application/ao-user/vms/manage-storage/add-a-vm-disk
 	if p.EphemeralDiskSizeGB < 10 {
-		errs = multierror.Append(errs, errors.New("Minimum EphemeralDiskSizeGB is 10 GB"))
+		errs = errors.Join(errs, errors.New("Minimum EphemeralDiskSizeGB is 10 GB"))
 	}
 
 	// If LoadBalancer is specified, all fields must be set
 	lb := p.LoadBalancer
 	if len(lb.Name) > 0 || len(lb.Selector.Key) > 0 || len(lb.Selector.Value) > 0 {
 		if len(lb.Name) == 0 {
-			errs = multierror.Append(errs, errors.New("Must provide non-empty Name of LoadBalancer"))
+			errs = errors.Join(errs, errors.New("Must provide non-empty Name of LoadBalancer"))
 		}
 		if len(lb.Selector.Key) == 0 {
-			errs = multierror.Append(errs, errors.New("Must provide non-empty Key of LoadBalancer Selector"))
+			errs = errors.Join(errs, errors.New("Must provide non-empty Key of LoadBalancer Selector"))
 		}
 		if len(lb.Selector.Value) == 0 {
-			errs = multierror.Append(errs, errors.New("Must provide non-empty Value of LoadBalancer Selector"))
+			errs = errors.Join(errs, errors.New("Must provide non-empty Value of LoadBalancer Selector"))
 		}
 	}
 
@@ -171,25 +170,25 @@ func (p *Property) validate() error {
 	cn := p.CloudNAT
 	if len(cn.Name) > 0 || len(cn.Selector.Key) > 0 || len(cn.Selector.Value) > 0 {
 		if len(cn.Name) == 0 {
-			errs = multierror.Append(errs, errors.New("Must provide non-empty Name of CloudNAT"))
+			errs = errors.Join(errs, errors.New("Must provide non-empty Name of CloudNAT"))
 		}
 		if len(cn.Selector.Key) == 0 {
-			errs = multierror.Append(errs, errors.New("Must provide non-empty Key of CloudNAT Selector"))
+			errs = errors.Join(errs, errors.New("Must provide non-empty Key of CloudNAT Selector"))
 		}
 		if len(cn.Selector.Value) == 0 {
-			errs = multierror.Append(errs, errors.New("Must provide non-empty Value of CloudNAT Selector"))
+			errs = errors.Join(errs, errors.New("Must provide non-empty Value of CloudNAT Selector"))
 		}
 	}
 
-	return errs.ErrorOrNil()
+	return errs
 }
 
 func (p *Property) MultizoneValidate() error {
-	var errs *multierror.Error
+	var errs error
 
 	if len(p.Zone) == 0 {
-		errs = multierror.Append(errs, errors.New("Non-empty zone name must be provided"))
+		errs = errors.Join(errs, errors.New("Non-empty zone name must be provided"))
 	}
 
-	return errs.ErrorOrNil()
+	return errs
 }

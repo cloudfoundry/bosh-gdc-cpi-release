@@ -41,7 +41,7 @@ import (
 )
 
 const (
-	// Need to import custom images to the bucket named "vm-images-bucket", http://shortn/_MtP1GLY3Io
+	// Need to import custom images to the bucket named "vm-images-bucket".
 	byoBucket = "vm-images-bucket"
 	cpiValue  = "bosh-cpi"
 )
@@ -137,7 +137,7 @@ func (s *Stemcells) CreateStemcell(imagePath string, stemcellCloudProps apiv1.St
 	return stemcellCID, nil
 }
 
-// TODO(b/309450687): migrate to use VMM's formal DeleteVirtualMachineImage API when ready (b/305796934)
+// TODO: migrate to use VMM's formal DeleteVirtualMachineImage API when ready
 func (s *Stemcells) DeleteStemcell(cid apiv1.StemcellCID) error {
 	return s.deleteStemcell(context.Background(), cid.AsString())
 }
@@ -206,7 +206,7 @@ func (s *Stemcells) importImage(ctx context.Context, imageObjectName string, cid
 		},
 	}
 
-	// VMM VirtuamMachineImageImport API throws error on request conflict, http://shortn/_YRJEaIbdxw.
+	// VMM VirtualMachineImageImport API throws error on request conflict.
 	// For unit tests, use 'GenerateName' rather than 'Name' to ignore image import conflict
 	if s.ignoreConflict {
 		imageImport.ObjectMeta = metav1.ObjectMeta{

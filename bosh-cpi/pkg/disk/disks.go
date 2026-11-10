@@ -244,8 +244,7 @@ func (d *Disks) AttachDiskV2(vmCID apiv1.VMCID, diskCID apiv1.DiskCID) (apiv1.Di
 		return apiv1.DiskHint{}, fmt.Errorf("find disk: %w", err)
 	}
 
-	// explanation for why this specific path in go/bosh-gdch-disk-attach
-	// tl;dr its the most stable udev rule at the moment.
+	// Use the most stable udev rule path for QEMU hard disks.
 	diskPath := fmt.Sprintf("/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_%s", diskCID.AsString())
 	diskHint := apiv1.NewDiskHintFromString(diskPath)
 	for _, da := range vm.Spec.Disks {

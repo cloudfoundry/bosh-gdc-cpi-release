@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Google LLC
+#
+# SPDX-License-Identifier: Apache-2.0
 """Decide whether a release tag may be published, where it comes from, and whether it is Latest.
 
 A patch tag vX.Y.Z whose Z is above zero comes from the release/X.Y branch

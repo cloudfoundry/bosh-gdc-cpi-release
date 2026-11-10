@@ -260,7 +260,6 @@ func parseJwtEcdsaPrivateKey(handle *keyset.Handle) (*jwt_ecdsa_go_proto.JwtEcds
 	// Using insecurecleartextkeyset to access the private key. This is needed
 	// because the private key needs to be saved to a file on the end user's machine
 	// in order for the GDCH client library to sign JWTs.
-	// See go/gdch-service-identity-authentication.
 	ks := insecurecleartextkeyset.KeysetMaterial(handle)
 
 	keyID := ks.GetPrimaryKeyId()

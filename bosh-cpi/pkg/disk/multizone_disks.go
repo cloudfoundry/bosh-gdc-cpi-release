@@ -50,7 +50,7 @@ type MultizoneDisks struct {
 	multizoneFinder *service.MultizoneFinder
 }
 
-// TODO (b/409931584): add multizone support for using VMM Metadata Server
+// TODO: add multizone support for using VMM Metadata Server
 func NewMultizoneDisks(
 	cloudClients *kubeclient.KubeClients,
 	logger cfboshlog.Logger,

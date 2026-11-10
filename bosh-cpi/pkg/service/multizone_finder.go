@@ -16,13 +16,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/hashicorp/go-multierror"
 
 	kubeclient "github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/client/kube"
 )
@@ -40,18 +39,18 @@ func NewMultizoneFinder(cloudClients *kubeclient.KubeClients, projectID string) 
 }
 
 func (f *MultizoneFinder) GetZone(ctx context.Context, objName string, obj client.Object) (string, error) {
-	var errs *multierror.Error
+	var errs error
 	for zone, zonalKubeClient := range f.cloudClients.ZonalAPIServers {
 		err := zonalKubeClient.Get(ctx, client.ObjectKey{Name: objName, Namespace: f.projectID}, obj)
 		if err == nil {
 			return zone, nil
 		}
 		if client.IgnoreNotFound(err) != nil {
-			errs = multierror.Append(errs, fmt.Errorf("zone %s, %w", zone, err))
+			errs = errors.Join(errs, fmt.Errorf("zone %s, %w", zone, err))
 		}
 	}
 	if errs != nil {
-		return "", errs.ErrorOrNil()
+		return "", errs
 	}
 	return "", apierrors.NewNotFound(schema.GroupResource{Resource: obj.GetObjectKind().GroupVersionKind().Kind}, objName)
 }

@@ -108,7 +108,6 @@ func writeFileAndPermissions(name string, data []byte, perm fs.FileMode) error {
 		}
 	}
 
-	// suppress go/nogo-check#disallowedfunction os.WriteFile
 	if err := os.WriteFile(name, data, perm); err != nil {
 		return err
 	}
