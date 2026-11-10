@@ -9,11 +9,17 @@ on:
     types: [opened, synchronize, reopened]
     branches:
       - main
+  workflow_run:
+    workflows:
+      - CI
+      - Presubmit Integration Test
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'Dependabot Pull Request number to approve and enable auto-merge on'
-        required: true
+        description: 'Dependabot Pull Request number to approve and merge (leave empty to scan all open Dependabot PRs)'
+        required: false
         type: string
 
 permissions:
@@ -25,7 +31,7 @@ jobs:
     name: Approve & Enable Auto-Merge
     if: >-
       (github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]') ||
-      github.event_name == 'workflow_dispatch'
+      (github.event_name == 'workflow_dispatch' && inputs.pr_number != '')
     runs-on: ubuntu-latest
     steps:
       - name: Fetch Dependabot metadata
@@ -35,14 +41,14 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Auto-approve and queue auto-merge for SemVer minor/patch updates and github-actions
-      # updates; major or non-SemVer updates remain manual (or can be triggered via workflow_dispatch).
-      - name: Approve and enable auto-merge for minor, patch, and github-actions updates
+      # Auto-approve and queue auto-merge for SemVer minor/patch updates;
+      # major or non-SemVer updates and workflow file updates remain manual
+      # (or can be triggered via workflow_dispatch).
+      - name: Approve and enable auto-merge for minor and patch updates
         if: >-
           github.event_name == 'workflow_dispatch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor' ||
-          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-          steps.metadata.outputs.package-ecosystem == 'github-actions'
+          steps.metadata.outputs.update-type == 'version-update:semver-patch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
@@ -69,3 +75,246 @@ jobs:
           if ! gh pr merge --auto --squash "${target_pr}" --repo "${GITHUB_REPOSITORY}"; then
             echo "::warning::Could not enable GitHub auto-merge on ${target_pr}. Ensure 'Allow auto-merge' is enabled in Repository Settings -> General -> Pull Requests."
           fi
+
+  finalize-merge:
+    name: Merge Verified Dependabot PR
+    needs: [auto-merge]
+    if: >-
+      always() &&
+      (
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+        (github.event_name == 'workflow_dispatch' && (needs.auto-merge.result == 'success' || needs.auto-merge.result == 'skipped'))
+      )
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dependabot-finalize-merge
+      cancel-in-progress: false
+    steps:
+      # Runs in the context of main after CI / Presubmit Integration Test completes.
+      # Because the main branch ruleset requires 2 approvals (and classic branch protection
+      # requires a CODEOWNERS review), a single github-actions[bot] approval cannot trigger
+      # GitHub's built-in auto-merge without a human review. Once all 4 required checks pass
+      # on a Dependabot PR commit that was approved by Approve & Enable Auto-Merge and only
+      # modifies allowed dependency manifests, this step fast-forwards main to the PR commit
+      # using RELEASE_METADATA_DEPLOY_KEY (which is an authorized bypass actor on main).
+      - name: Fast-forward merge verified Dependabot PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_METADATA_DEPLOY_KEY: ${{ secrets.RELEASE_METADATA_DEPLOY_KEY }}
+          DISPATCH_PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+
+          candidate_prs=()
+          if [[ -n "${DISPATCH_PR_NUMBER:-}" ]]; then
+            clean_pr="${DISPATCH_PR_NUMBER//#/}"
+            clean_pr="${clean_pr//[[:space:]]/}"
+            candidate_prs=("${clean_pr}")
+          else
+            mapfile -t candidate_prs < <(
+              gh pr list --repo "${GITHUB_REPOSITORY}" --base main --state open --author "app/dependabot" \
+                --json number --jq '.[].number'
+            )
+          fi
+
+          if [[ "${#candidate_prs[@]}" -eq 0 ]]; then
+            echo "No open Dependabot PRs targeting main."
+            exit 0
+          fi
+
+          allowed_dep_regex='^(go\.mod|go\.sum|bosh-cpi/go\.mod|bosh-cpi/go\.sum)$'
+          required_checks=(
+            "Check (Lint & Format)"
+            "Unit Tests"
+            "Build Binaries"
+            "BOSH CPI Integration Test (GDC Staging)"
+          )
+
+          key_file=""
+          cleanup_key() {
+            if [[ -n "${key_file}" ]]; then
+              rm -f "${key_file}"
+            fi
+          }
+          trap cleanup_key EXIT
+
+          if [[ -n "${RELEASE_METADATA_DEPLOY_KEY:-}" ]]; then
+            xtrace_was_set="false"
+            if [[ "$-" == *x* ]]; then
+              xtrace_was_set="true"
+              set +x
+            fi
+            while IFS= read -r kline; do
+              if [[ -n "${kline}" ]]; then
+                echo "::add-mask::${kline}"
+              fi
+            done <<<"${RELEASE_METADATA_DEPLOY_KEY}"
+            key_file="$(mktemp /tmp/dependabot-deploy-key.XXXXXX)"
+            chmod 0600 "${key_file}"
+            printf '%s\n' "${RELEASE_METADATA_DEPLOY_KEY}" >"${key_file}"
+            if [[ "${xtrace_was_set}" == "true" ]]; then
+              set -x
+            fi
+          fi
+
+          for pr_num in "${candidate_prs[@]}"; do
+            [[ -z "${pr_num}" ]] && continue
+            echo "=== Evaluating PR #${pr_num} ==="
+
+            pr_json=$(gh pr view "${pr_num}" --repo "${GITHUB_REPOSITORY}" \
+              --json number,state,author,baseRefName,headRefName,headRefOid,reviews)
+
+            pr_state=$(jq -r '.state' <<<"${pr_json}")
+            pr_author=$(jq -r '.author.login' <<<"${pr_json}")
+            base_ref=$(jq -r '.baseRefName' <<<"${pr_json}")
+            head_ref=$(jq -r '.headRefName' <<<"${pr_json}")
+            head_sha=$(jq -r '.headRefOid' <<<"${pr_json}")
+
+            if [[ "${pr_state}" != "OPEN" || "${base_ref}" != "main" ]]; then
+              echo "Skipping PR #${pr_num}: state=${pr_state}, base=${base_ref}."
+              continue
+            fi
+            if [[ "${pr_author}" != "app/dependabot" && "${pr_author}" != "dependabot[bot]" ]]; then
+              echo "Skipping PR #${pr_num}: author '${pr_author}' is not dependabot."
+              continue
+            fi
+            if [[ "${head_ref}" != dependabot/* ]]; then
+              echo "Skipping PR #${pr_num}: head branch '${head_ref}' does not start with 'dependabot/'."
+              continue
+            fi
+
+            approved=$(jq -r --arg sha "${head_sha}" '
+              [
+                .reviews[]?
+                | select(
+                    .state == "APPROVED" and
+                    .commit.oid == $sha and
+                    (
+                      .author.login == "github-actions" or
+                      .author.login == "github-actions[bot]" or
+                      .author.login == "app/github-actions"
+                    )
+                  )
+              ] | length > 0
+            ' <<<"${pr_json}")
+
+            if [[ "${approved}" != "true" ]]; then
+              echo "Skipping PR #${pr_num}: commit ${head_sha:0:7} does not have a github-actions[bot] auto-merge approval."
+              continue
+            fi
+
+            # Wait briefly if a sibling rerun (e.g. triggered by complete_pr_check_run) is still finishing.
+            all_checks_passed="false"
+            for poll in 1 2 3 4 5 6; do
+              checks_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100")
+              any_in_progress="false"
+              all_req_green="true"
+
+              for req in "${required_checks[@]}"; do
+                in_prog=$(jq -r --arg name "${req}" '
+                  [ .check_runs[]? | select(.name == $name and .status != "completed") ] | length > 0
+                ' <<<"${checks_json}")
+                latest_conclusion=$(jq -r --arg name "${req}" '
+                  [ .check_runs[]? | select(.name == $name and .status == "completed") ]
+                  | sort_by(.id)
+                  | last
+                  | .conclusion // "missing"
+                ' <<<"${checks_json}")
+
+                if [[ "${in_prog}" == "true" ]]; then
+                  any_in_progress="true"
+                  all_req_green="false"
+                elif [[ "${latest_conclusion}" != "success" ]]; then
+                  all_req_green="false"
+                fi
+              done
+
+              if [[ "${all_req_green}" == "true" ]]; then
+                all_checks_passed="true"
+                break
+              fi
+              if [[ "${any_in_progress}" == "true" && "${poll}" -lt 6 ]]; then
+                echo "PR #${pr_num}: required check-run still in progress (poll ${poll}/6); waiting 10s..."
+                sleep 10
+              else
+                break
+              fi
+            done
+
+            if [[ "${all_checks_passed}" != "true" ]]; then
+              echo "Skipping PR #${pr_num}: not all required status checks have succeeded on ${head_sha:0:7}."
+              continue
+            fi
+
+            cla_state=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/status" \
+              --jq '[ .statuses[]? | select(.context == "EasyCLA") ] | first | .state // "not_present"')
+            if [[ "${cla_state}" != "success" && "${cla_state}" != "not_present" ]]; then
+              echo "Skipping PR #${pr_num}: EasyCLA status is '${cla_state}' on ${head_sha:0:7}."
+              continue
+            fi
+
+            if [[ ! -d .git ]]; then
+              git init -q
+              git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+            fi
+            git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main" "+refs/pull/${pr_num}/head:refs/remotes/origin/pr/${pr_num}"
+            fetched_sha=$(git rev-parse "refs/remotes/origin/pr/${pr_num}")
+            if [[ "${fetched_sha}" != "${head_sha}" ]]; then
+              echo "Skipping PR #${pr_num}: PR head changed during fetch (${head_sha:0:7} -> ${fetched_sha:0:7})."
+              continue
+            fi
+
+            changed_files=$(git diff --name-only "origin/main...${head_sha}")
+            if [[ -z "${changed_files}" ]]; then
+              echo "Skipping PR #${pr_num}: no file diff relative to origin/main."
+              continue
+            fi
+            disallowed_files=$(printf '%s\n' "${changed_files}" | grep -vE "${allowed_dep_regex}" || true)
+            if [[ -n "${disallowed_files}" ]]; then
+              echo "::error::PR #${pr_num} modifies files outside allowed dependency manifests: ${disallowed_files//$'\n'/, }"
+              continue
+            fi
+
+            if ! git merge-base --is-ancestor origin/main "${head_sha}"; then
+              echo "PR #${pr_num} (${head_sha:0:7}) is behind origin/main; requesting '@dependabot rebase'..."
+              commit_date=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}" --jq '.commit.committer.date')
+              already_requested=$(gh pr view "${pr_num}" --repo "${GITHUB_REPOSITORY}" --json comments \
+                --jq --arg since "${commit_date}" '[ .comments[]? | select(.createdAt >= $since and (.body | contains("@dependabot rebase"))) ] | length > 0')
+              if [[ "${already_requested}" != "true" ]]; then
+                gh pr comment "${pr_num}" --repo "${GITHUB_REPOSITORY}" --body "@dependabot rebase"
+              fi
+              continue
+            fi
+
+            commit_count=$(git rev-list --count "origin/main..${head_sha}")
+            if [[ "${commit_count}" -ne 1 ]]; then
+              echo "Skipping PR #${pr_num}: expected exactly 1 commit ahead of origin/main, found ${commit_count}."
+              continue
+            fi
+
+            if gh pr merge "${pr_num}" --squash --repo "${GITHUB_REPOSITORY}" 2>/dev/null; then
+              echo "Merged PR #${pr_num} via gh pr merge --squash."
+              continue
+            fi
+
+            if [[ -z "${key_file}" ]]; then
+              echo "::warning::RELEASE_METADATA_DEPLOY_KEY is not set; PR #${pr_num} remains queued for auto-merge awaiting maintainer approval."
+              continue
+            fi
+
+            echo "Fast-forwarding main to verified Dependabot commit ${head_sha:0:7} for PR #${pr_num}..."
+            GIT_SSH_COMMAND="ssh -i ${key_file} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+              git push "git@github.com:${GITHUB_REPOSITORY}.git" "${head_sha}:refs/heads/main"
+
+            for wait_merge in 1 2 3 4 5; do
+              cur_state=$(gh pr view "${pr_num}" --repo "${GITHUB_REPOSITORY}" --json state --jq '.state' 2>/dev/null || echo "")
+              if [[ "${cur_state}" == "MERGED" ]]; then
+                echo "PR #${pr_num} marked as MERGED by GitHub."
+                break
+              fi
+              sleep 2
+            done
+
+            GIT_SSH_COMMAND="ssh -i ${key_file} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+              git push "git@github.com:${GITHUB_REPOSITORY}.git" ":refs/heads/${head_ref}" 2>/dev/null || true
+          done
