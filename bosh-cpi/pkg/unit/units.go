@@ -30,8 +30,8 @@ const (
 	GBToGiBFactor = MBToMiBFactor * KBToKiBFactor
 )
 
-// Converts units. E.g., convert resource from GB to GiB. This is a workaround for b/305825868
-// TODO(b/305825868): Memory in pre-defined types are in GB, which will be updated to GiB.
+// Converts units. E.g., convert resource from GB to GiB.
+// TODO: Memory in pre-defined types are in GB, which will be updated to GiB.
 func ConvertToBytes(quantity *resource.Quantity) *resource.Quantity {
 	if quantity.Format == resource.BinarySI {
 		return quantity

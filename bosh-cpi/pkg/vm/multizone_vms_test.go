@@ -189,8 +189,8 @@ func TestNewMultizoneVMs_DiskHotplugUsage(t *testing.T) {
 		GDC: config.GDCConfig{},
 	}
 	metadataClients := map[string]*metadata.MetadataClient{
-		"zone1": &metadata.MetadataClient{},
-		"zone2": &metadata.MetadataClient{},
+		"zone1": {},
+		"zone2": {},
 	}
 
 	testCases := map[string]struct {

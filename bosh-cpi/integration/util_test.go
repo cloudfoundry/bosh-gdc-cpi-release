@@ -17,6 +17,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -24,7 +25,6 @@ import (
 	"github.com/cloudfoundry/bosh-cpi-go/apiv1"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/hashicorp/go-multierror"
 	"golang.org/x/exp/slices"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
@@ -901,20 +901,20 @@ func getCloudProperties(yamlFile []byte) (apiv1.CloudPropsImpl, error) {
 }
 
 func verifySubMap(subMap map[string]string, mainMap map[string]string) error {
-	var errs *multierror.Error
+	var errs error
 
 	// Check if all target keys are present in the sub-map
 	for k, v := range subMap {
 		got, ok := mainMap[k]
 		if !ok {
-			errs = multierror.Append(errs, fmt.Errorf("key %s is missing", k))
+			errs = errors.Join(errs, fmt.Errorf("key %s is missing", k))
 		}
 
 		if v != got {
-			errs = multierror.Append(errs, fmt.Errorf("value for key %s does not match, got (%s), expected (%s)", k, got, v))
+			errs = errors.Join(errs, fmt.Errorf("value for key %s does not match, got (%s), expected (%s)", k, got, v))
 		}
 	}
-	return errs.ErrorOrNil()
+	return errs
 }
 
 func createProjectNetworkPolicy(kubeClient client.WithWatch) error {

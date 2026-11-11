@@ -184,7 +184,7 @@ func (v *VMService) Delete(ctx context.Context, vmName string) error {
 		return fmt.Errorf("wait until VM %q is deleted: %w", vm.Name, err)
 	}
 
-	// Until VMM supports (b/369855189), CPI will force disk deletions since there is currently a known delay
+	// CPI will force disk deletions since there is currently a known delay
 	// from the VMM controller side between VM deletion and the deletion of associated disks configured with
 	// auto deletion. This won't cause a race condition as `v.DeleteDisk`` swallows NotFound errors
 	for _, diskName := range disksToDelete {

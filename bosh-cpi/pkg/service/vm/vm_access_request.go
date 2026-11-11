@@ -92,7 +92,7 @@ func (ar *VMAccessRequestService) getOrCreate(ctx context.Context, vmName string
 		if vmar.Spec.VM == vmName &&
 			vmar.Spec.SSH.Key == sshPublicKey &&
 			vmar.Status.State != vmv1.VMAccessRequestStateFailed &&
-			// TODO(b/330531551) Filter expired VMAR with the new VMAR state
+			// TODO: Filter expired VMAR with the new VMAR state
 			!now.After(vmar.CreationTimestamp.Time.Add(vmar.Spec.SSH.TTL.Duration)) {
 			got = &vmarList.Items[i]
 		}

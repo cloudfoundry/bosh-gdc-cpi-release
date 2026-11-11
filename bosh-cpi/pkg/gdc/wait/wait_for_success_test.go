@@ -280,7 +280,7 @@ func TestWaitForSuccessWithPanic(t *testing.T) {
 // interval but short timeout, the function will return based on the shorter
 // timeout.
 //
-// This validates a fix for b/310272841, where WaitForSuccess was waiting
+// This validates a fix where WaitForSuccess was waiting
 // out the entire interval, even though the overall timeout came much sooner.
 func TestWaitForSuccessCutsLongSleep(t *testing.T) {
 	t.Parallel()

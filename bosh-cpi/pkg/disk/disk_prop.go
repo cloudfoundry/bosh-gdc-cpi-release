@@ -19,7 +19,6 @@ import (
 	"fmt"
 
 	consts "github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/consts"
-	"github.com/hashicorp/go-multierror"
 )
 
 type Property struct {
@@ -30,26 +29,26 @@ type Property struct {
 }
 
 func (p *Property) validate() error {
-	var errs *multierror.Error
+	var errs error
 
 	if len(p.DiskType) > 0 {
 		if p.DiskType != consts.DiskTypePerformance && p.DiskType != consts.DiskTypeStandard {
-			errs = multierror.Append(errs, fmt.Errorf("disk type must be either '%v' or '%v'", consts.DiskTypePerformance, consts.DiskTypeStandard))
+			errs = errors.Join(errs, fmt.Errorf("disk type must be either '%v' or '%v'", consts.DiskTypePerformance, consts.DiskTypeStandard))
 		}
 	} else if len(p.DiskType) == 0 {
 		// Empty/missing disk type defaults to Standard disk type.
 		p.DiskType = consts.DiskTypeStandard
 	}
 
-	return errs.ErrorOrNil()
+	return errs
 }
 
 func (p *Property) multizoneValidate() error {
-	var errs *multierror.Error
+	var errs error
 
 	if len(p.Zone) == 0 {
-		errs = multierror.Append(errs, errors.New("zone name must not be empty"))
+		errs = errors.Join(errs, errors.New("zone name must not be empty"))
 	}
 
-	return errs.ErrorOrNil()
+	return errs
 }

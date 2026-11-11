@@ -43,7 +43,6 @@ require (
 	github.com/cloudfoundry/bosh-cpi-go v0.0.0-20260221100037-8b66e1def6f1
 	github.com/cloudfoundry/bosh-utils v0.0.671
 	github.com/googlecloudplatform/google-distributed-cloud-apis v0.0.0-20260824201624-0c18fa0ddc04
-	github.com/hashicorp/go-multierror v1.1.1
 	golang.org/x/exp v0.0.0-20250718183923-645b1fa84792
 	sigs.k8s.io/cluster-api v1.10.2
 )
@@ -84,7 +83,6 @@ require (
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/gofuzz v1.2.1-0.20210504230335-f78f29fc09ea // indirect
-	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.1-0.20220621161143-b0104c826a24 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -127,12 +125,11 @@ replace (
 	sigs.k8s.io/controller-runtime => sigs.k8s.io/controller-runtime v0.19.0
 )
 
-// TODO(b/293290170)
 replace go.etcd.io/etcd/client/pkg/v3 => go.etcd.io/etcd/client/pkg/v3 v3.5.33
 
 replace go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc => go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.53.0
 
-// TODO(b/294931034) Pin to avoid controller-tools generating wrong CRD for celldns.
+// TODO: Pin to avoid controller-tools generating wrong CRD for celldns.
 replace github.com/gobuffalo/flect => github.com/gobuffalo/flect v0.3.0
 
 // Needed to update oc/obj/pkg/s3/client_mock.go as it uses aws-sdk-go v1.45.7

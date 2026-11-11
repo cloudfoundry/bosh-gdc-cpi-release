@@ -17,12 +17,12 @@ package vm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
 
 	"github.com/cloudfoundry/bosh-cpi-go/apiv1"
-	"github.com/hashicorp/go-multierror"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -203,15 +203,15 @@ func (v *VMs) PerformReboot(ctx context.Context, vm *vmv1.VirtualMachine) error 
 }
 
 func (v *VMs) validateDisks(ctx context.Context, diskIDs []apiv1.DiskCID) error {
-	var errs *multierror.Error
+	var errs error
 
 	for _, id := range diskIDs {
 		if _, err := v.finder.FindDisk(ctx, id.AsString()); err != nil {
-			errs = multierror.Append(errs, err)
+			errs = errors.Join(errs, err)
 		}
 	}
 
-	return errs.ErrorOrNil()
+	return errs
 }
 
 func (v *VMs) createBootDisk(ctx context.Context, diskName, vmName string, stemcellID apiv1.StemcellCID, bootDiskGB int, bootDiskType string) error {
@@ -408,8 +408,8 @@ func (v *VMs) createVM(ctx context.Context, input vmCreationInput) error {
 		}
 	} else {
 		v.logger.Info("createVM", "Cloud NAT Gateways are disabled. Add label: %v:true to VM", consts.VMExternalEgressControlLabelKey)
-		// label added for external egress (legacy): b/370383312#comment8
-		// TODO(b/370823810): use `VirtualMachineExternalAccess` to control VM egress
+		// label added for external egress (legacy)
+		// TODO: use `VirtualMachineExternalAccess` to control VM egress
 		vm.Labels[consts.VMExternalEgressControlLabelKey] = "true"
 	}
 
@@ -481,7 +481,7 @@ func (v *VMs) createVM(ctx context.Context, input vmCreationInput) error {
 		input.agentID, apiv1.NewVMCID(input.vmName), input.networks, input.env, v.agentOptions)
 	// GDCH VMM uses `virtio-scsi` disks, and the dafault disk address bus is 0,
 	// https://github.com/kubevirt/kubevirt/blob/main/pkg/virt-launcher/virtwrap/converter/converter.go#L170.
-	// Hence, until VMM addresses b/320800880, per the discussion with VMM, `scsi-0QEMU_QEMU_HARDDISK_` is
+	// Hence, `scsi-0QEMU_QEMU_HARDDISK_` is
 	// the most reliable disk path prefix referencing to that attached disk on GDCH VMs
 	ephemeralDiskHint := apiv1.NewDiskHintFromMap(
 		map[string]interface{}{

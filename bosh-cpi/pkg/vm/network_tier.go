@@ -17,7 +17,7 @@ package vm
 import "strings"
 
 // Determines if a given machine type and vCPU count are eligible for Tier 1 networking.
-// TODO(b/473616830): This logic is obtained from public documentation (source of record) and should be removed in favor of golang package VMM team will create to encapsulate this logic:
+// TODO: This logic is obtained from public documentation (source of record) and should be removed in favor of golang package VMM team will create to encapsulate this logic:
 // See: https://docs.cloud.google.com/distributed-cloud/hosted/docs/next/gdch/application/ao-user/vms/manage-vms/operations-and-lifecycle/vm-config-network#limitations
 func IsTier1NetworkSupported(machineType string, vCPUs uint32) bool {
 	thresholds := map[string]int{

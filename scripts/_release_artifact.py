@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Google LLC
+#
+# SPDX-License-Identifier: Apache-2.0
 """Inspect a CPI release without extracting its archive or trusting its filename."""
 from __future__ import annotations
 

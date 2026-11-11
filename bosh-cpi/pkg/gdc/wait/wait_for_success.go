@@ -21,8 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/hashicorp/go-multierror"
 )
 
 // maxErrsRetained is the maximum number of errors that will be returned,
@@ -108,7 +106,7 @@ func (w *Waiter) RetryOnError(ctx context.Context, wait Waiting, desc string, re
 	giveUp, _ := waitCtx.Deadline()
 	w.Logger.Info(fmt.Sprintf("[%s] WaitForSuccess until %s, retry every %s", desc, giveUp, wait.Every))
 
-	// TODO: b/422339001 - Modify the code to use Waiter clock
+	// TODO: Modify the code to use Waiter clock
 	nextUpdate := time.Now().Add(updateEvery)
 	update := func(msg string) {
 		if now := time.Now(); now.After(nextUpdate) {
@@ -120,7 +118,7 @@ func (w *Waiter) RetryOnError(ctx context.Context, wait Waiting, desc string, re
 	// Buffered so that the goroutine can exit even if this function has
 	// returned.
 	done := make(chan error, 1)
-	var errs = new(multierror.Error)
+	var errs []error
 	for {
 		// Start the every timer early so that we can account for the execution
 		// time.
@@ -146,18 +144,18 @@ func (w *Waiter) RetryOnError(ctx context.Context, wait Waiting, desc string, re
 				errs = add(errs, err)
 			}
 			if err != nil && !retriable(err) {
-				return len(errs.Errors), errs.ErrorOrNil()
+				return len(errs), errors.Join(errs...)
 			}
 			if err == nil {
-				// Add one to count because errs.Count() does not track the successful attempt.
-				return len(errs.Errors) + 1, nil
+				// Add one to count because errs does not track the successful attempt.
+				return len(errs) + 1, nil
 			}
 			update(fmt.Sprintf("[%s] WaitForSuccess still retrying: %v", desc, getRecentError(errs)))
 		case <-waitCtx.Done(): // Ctx done or we are giving up based on total time.
 			cancel()
 			err := fmt.Errorf("parent %s: %w", waitCtx.Err(), ErrTotalTimeoutReached)
 			errs = add(errs, err)
-			return len(errs.Errors), errs.ErrorOrNil()
+			return len(errs), errors.Join(errs...)
 		case <-time.After(wait.Timeout): // Reached individual attempt timeout before func finished.
 			cancel()
 			// Ensure that we don't end up with multiple f() running in
@@ -169,7 +167,7 @@ func (w *Waiter) RetryOnError(ctx context.Context, wait Waiting, desc string, re
 			case <-waitCtx.Done():
 				err := fmt.Errorf("parent %s: %w", waitCtx.Err(), ErrTotalTimeoutReached)
 				errs = add(errs, err)
-				return len(errs.Errors), errs.ErrorOrNil()
+				return len(errs), errors.Join(errs...)
 			}
 			update(fmt.Sprintf("[%s] WaitForSuccess still retrying: %v", desc, getRecentError(errs)))
 		}
@@ -181,24 +179,18 @@ func (w *Waiter) RetryOnError(ctx context.Context, wait Waiting, desc string, re
 	}
 }
 
-func getRecentError(errs *multierror.Error) error {
-	if errs == nil {
-		return nil
-	}
-	size := len(errs.Errors)
+func getRecentError(errs []error) error {
+	size := len(errs)
 	if size == 0 {
 		return nil
 	}
-	return errs.Errors[size-1]
+	return errs[size-1]
 }
 
-func add(errs *multierror.Error, err error) *multierror.Error {
-	if errs == nil {
-		errs = new(multierror.Error)
-	}
-	errs.Errors = append(errs.Errors, err)
-	if len(errs.Errors) > maxErrsRetained {
-		errs.Errors = errs.Errors[1:]
+func add(errs []error, err error) []error {
+	errs = append(errs, err)
+	if len(errs) > maxErrsRetained {
+		errs = errs[1:]
 	}
 	return errs
 }
