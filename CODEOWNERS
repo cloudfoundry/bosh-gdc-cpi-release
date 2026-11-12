@@ -5,4 +5,4 @@
 # Path-specific rules with a single owner therefore produced empty reviewer
 # requests whenever that owner authored the PR, and could never satisfy the
 # two-approval requirement on their own.
-* @ajlfleos @sanjay-nagarur @dilipkumar2k6 @daniel-sarran @cmuuss @ahsanasardar @a-hassanin @neddp @gowrisankar22 @ivaylogi98
+* @sanjay-nagarur @dilipkumar2k6 @daniel-sarran @cmuuss @ahsanasardar @a-hassanin @neddp @gowrisankar22 @ivaylogi98
