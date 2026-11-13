@@ -110,7 +110,7 @@
         <div>
           <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Total Runs</p>
           <p id="kpi-total" class="text-3xl font-bold text-white mt-1">--</p>
-          <p id="kpi-sub-total" class="text-xs text-slate-500 mt-1">Biweekly (1st &amp; 15th) + Manual</p>
+          <p id="kpi-sub-total" class="text-xs text-slate-500 mt-1">Nightly (Mon–Thu) + Biweekly Release</p>
         </div>
         <div class="w-11 h-11 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
           <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -676,7 +676,9 @@
           }
         }
 
-        const mode = inferredMode || (ghRun.event === 'schedule' ? 'release' : 'snapshot');
+        const runDate = new Date(ghRun.run_started_at || ghRun.created_at);
+        const isBiweeklyReleaseDay = runDate.getUTCDate() === 1 || runDate.getUTCDate() === 15;
+        const mode = inferredMode || (ghRun.event === 'schedule' && isBiweeklyReleaseDay ? 'release' : 'snapshot');
         const version = inferredVersion || (mode === 'release' ? 'v0.1.0' : `v0.1.0-dev.${shortSha}`);
 
         if (!seenIds.has(idStr)) {
