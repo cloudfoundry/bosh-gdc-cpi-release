@@ -15,11 +15,13 @@
 package disk
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +32,7 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
 	clock "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,6 +45,7 @@ import (
 
 	backupv1 "github.com/googlecloudplatform/google-distributed-cloud-apis/pkg/apis/public/backup/v1"
 
+	"github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/gdc/wait"
 	"github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/gdc/wait/mock"
 	"github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/service"
 	"github.com/cloudfoundry/bosh-gdc-cpi-release/bosh-cpi/pkg/test"
@@ -1962,9 +1966,11 @@ func TestAttachDiskV2_HotplugWaitEdgeCases(t *testing.T) {
 	diskCID := apiv1.NewDiskCID("disk")
 
 	tests := []struct {
-		name      string
-		mutator   func(*vmv1.VirtualMachine)
-		expectErr bool
+		name            string
+		mutator         func(*vmv1.VirtualMachine)
+		expectErr       bool
+		wantErrContains []string
+		wantErr         string // exact error, when set
 	}{
 		{
 			name: "status_disks_is_nil",
@@ -2037,6 +2043,43 @@ func TestAttachDiskV2_HotplugWaitEdgeCases(t *testing.T) {
 			},
 			expectErr: false,
 		},
+		{
+			name: "attaching_reports_phase_reason_and_message",
+			mutator: func(v *vmv1.VirtualMachine) {
+				v.Status.Disks = &vmv1.VirtualMachineAttachedDisksInfo{
+					Attachments: []vmv1.VirtualMachineAttachedDiskStatus{
+						{Name: diskCID.AsString(), Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseAttaching, Reason: "SuccessfulCreate", Message: "Created hotplug attachment pod hp-volume-abcde"},
+					},
+				}
+			},
+			expectErr: true,
+			wantErr: "wait for disk attachment: check() = false, <nil>.\n" +
+				"Latest status for disk \"disk\":\n" +
+				" Phase: \"Attaching\"\n" +
+				" Hotpluggable: true\n" +
+				" Reason: \"SuccessfulCreate\"\n" +
+				" Message: \"Created hotplug attachment pod hp-volume-abcde\"",
+		},
+		{
+			name: "missing_status_reports_not_listed",
+			mutator: func(v *vmv1.VirtualMachine) {
+				v.Status.Disks = nil
+			},
+			expectErr:       true,
+			wantErrContains: []string{`Latest status for disk "disk": not listed in VM status.disks.attachments`},
+		},
+		{
+			name: "coldplug_entry_reports_hotpluggable_false",
+			mutator: func(v *vmv1.VirtualMachine) {
+				v.Status.Disks = &vmv1.VirtualMachineAttachedDisksInfo{
+					Attachments: []vmv1.VirtualMachineAttachedDiskStatus{
+						{Name: diskCID.AsString(), Hotpluggable: ptr.To(false), Phase: vmv1.AttachedDiskPhaseReady},
+					},
+				}
+			},
+			expectErr:       true,
+			wantErrContains: []string{`Phase: "Ready"`, "Hotpluggable: false"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -2073,6 +2116,14 @@ func TestAttachDiskV2_HotplugWaitEdgeCases(t *testing.T) {
 				if !strings.Contains(err.Error(), "wait for disk attachment") {
 					t.Fatalf("got error %v, want wait error", err)
 				}
+				for _, want := range tc.wantErrContains {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("got error %q, want it to contain %q", err.Error(), want)
+					}
+				}
+				if tc.wantErr != "" && err.Error() != tc.wantErr {
+					t.Errorf("got error %q, want %q", err.Error(), tc.wantErr)
+				}
 			} else {
 				if err != nil {
 					t.Fatalf("got error %v, want nil", err)
@@ -2087,9 +2138,11 @@ func TestDetachDisk_HotplugWaitEdgeCases(t *testing.T) {
 	diskCID := apiv1.NewDiskCID("disk")
 
 	tests := []struct {
-		name      string
-		mutator   func(*vmv1.VirtualMachine)
-		expectErr bool
+		name            string
+		mutator         func(*vmv1.VirtualMachine)
+		expectErr       bool
+		wantErrContains []string
+		wantErr         string // exact error, when set
 	}{
 		{
 			name: "status_disks_is_nil",
@@ -2130,6 +2183,8 @@ func TestDetachDisk_HotplugWaitEdgeCases(t *testing.T) {
 			expectErr: true,
 		},
 		{
+			// Deliberate: detach only waits for the hotplug entry to go away. A
+			// coldplug entry with the same name is not part of the hotplug.
 			name: "still_attached_hotpluggable_false",
 			mutator: func(v *vmv1.VirtualMachine) {
 				v.Status.Disks = &vmv1.VirtualMachineAttachedDisksInfo{
@@ -2150,6 +2205,23 @@ func TestDetachDisk_HotplugWaitEdgeCases(t *testing.T) {
 				}
 			},
 			expectErr: false,
+		},
+		{
+			name: "still_detaching_reports_phase_reason_and_message",
+			mutator: func(v *vmv1.VirtualMachine) {
+				v.Status.Disks = &vmv1.VirtualMachineAttachedDisksInfo{
+					Attachments: []vmv1.VirtualMachineAttachedDiskStatus{
+						{Name: diskCID.AsString(), Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseDetaching, Reason: "VolumeUnMounted", Message: "volume is being detached"},
+					},
+				}
+			},
+			expectErr: true,
+			wantErr: "wait for disk detachment: check() = false, <nil>.\n" +
+				"Latest status for disk \"disk\":\n" +
+				" Phase: \"Detaching\"\n" +
+				" Hotpluggable: true\n" +
+				" Reason: \"VolumeUnMounted\"\n" +
+				" Message: \"volume is being detached\"",
 		},
 	}
 
@@ -2191,6 +2263,14 @@ func TestDetachDisk_HotplugWaitEdgeCases(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), "wait for disk detachment") {
 					t.Fatalf("got error %v, want wait error", err)
+				}
+				for _, want := range tc.wantErrContains {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("got error %q, want it to contain %q", err.Error(), want)
+					}
+				}
+				if tc.wantErr != "" && err.Error() != tc.wantErr {
+					t.Errorf("got error %q, want %q", err.Error(), tc.wantErr)
 				}
 			} else {
 				if err != nil {
@@ -2249,6 +2329,400 @@ func TestSetDiskMetadata_ConflictReachesDirectorAsRetryable(t *testing.T) {
 			}
 			if !retryable.CanRetry() {
 				t.Error("got CanRetry false, expected the director to be told it can retry")
+			}
+		})
+	}
+}
+
+func TestFindAttachmentStatus(t *testing.T) {
+	cold := vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Hotpluggable: ptr.To(false), Phase: vmv1.AttachedDiskPhaseReady}
+	cold2 := vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Phase: vmv1.AttachedDiskPhaseUnknown}
+	hot := vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseAttaching}
+	hot2 := vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseReady}
+	other := vmv1.VirtualMachineAttachedDiskStatus{Name: "other-disk", Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseReady}
+	vmWith := func(attachments ...vmv1.VirtualMachineAttachedDiskStatus) *vmv1.VirtualMachine {
+		return &vmv1.VirtualMachine{Status: vmv1.VirtualMachineStatus{Disks: &vmv1.VirtualMachineAttachedDisksInfo{Attachments: attachments}}}
+	}
+
+	tests := []struct {
+		name    string
+		vm      *vmv1.VirtualMachine
+		hotOnly bool
+		want    *vmv1.VirtualMachineAttachedDiskStatus
+	}{
+		{name: "nil_vm", vm: nil, want: nil},
+		{name: "nil_disks", vm: &vmv1.VirtualMachine{}, want: nil},
+		{name: "no_match", vm: vmWith(other), want: nil},
+		{name: "prefers_hotpluggable_entry_listed_after_coldplug", vm: vmWith(cold, hot), want: &hot},
+		{name: "prefers_hotpluggable_entry_listed_before_coldplug", vm: vmWith(hot, cold), want: &hot},
+		{name: "falls_back_to_coldplug_entry", vm: vmWith(cold), want: &cold},
+		{name: "duplicate_hotpluggable_entries_first_wins", vm: vmWith(hot, hot2), want: &hot},
+		{name: "duplicate_coldplug_entries_first_wins", vm: vmWith(cold, cold2), want: &cold},
+		{name: "hot_only_ignores_coldplug_entry", vm: vmWith(cold), hotOnly: true, want: nil},
+		{name: "hot_only_finds_hotpluggable_entry", vm: vmWith(cold, hot), hotOnly: true, want: &hot},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := findAttachmentStatus(tc.vm, "disk", tc.hotOnly)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("findAttachmentStatus() = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFindAttachmentStatus_ReturnsCopy(t *testing.T) {
+	for _, hotpluggable := range []bool{true, false} {
+		t.Run(fmt.Sprintf("hotpluggable_%t", hotpluggable), func(t *testing.T) {
+			vm := &vmv1.VirtualMachine{Status: vmv1.VirtualMachineStatus{Disks: &vmv1.VirtualMachineAttachedDisksInfo{
+				Attachments: []vmv1.VirtualMachineAttachedDiskStatus{
+					{Name: "disk", Hotpluggable: ptr.To(hotpluggable), Phase: vmv1.AttachedDiskPhaseAttaching},
+				},
+			}}}
+
+			got := findAttachmentStatus(vm, "disk", false)
+			got.Phase = vmv1.AttachedDiskPhaseReady
+			*got.Hotpluggable = !hotpluggable
+
+			orig := vm.Status.Disks.Attachments[0]
+			if orig.Phase != vmv1.AttachedDiskPhaseAttaching || *orig.Hotpluggable != hotpluggable {
+				t.Errorf("changing the returned status changed the VM status to %+v", orig)
+			}
+		})
+	}
+}
+
+func TestAttachmentStatusEqual(t *testing.T) {
+	base := vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseAttaching, Reason: "r", Message: "m"}
+	with := func(f func(*vmv1.VirtualMachineAttachedDiskStatus)) *vmv1.VirtualMachineAttachedDiskStatus {
+		a := base.DeepCopy()
+		f(a)
+		return a
+	}
+
+	tests := []struct {
+		name string
+		a, b *vmv1.VirtualMachineAttachedDiskStatus
+		want bool
+	}{
+		{name: "both_nil", want: true},
+		{name: "nil_and_status", a: nil, b: &base, want: false},
+		{name: "status_and_nil", a: &base, b: nil, want: false},
+		{name: "same", a: &base, b: with(func(*vmv1.VirtualMachineAttachedDiskStatus) {}), want: true},
+		{name: "phase_differs", a: &base, b: with(func(a *vmv1.VirtualMachineAttachedDiskStatus) { a.Phase = vmv1.AttachedDiskPhaseReady }), want: false},
+		{name: "reason_differs", a: &base, b: with(func(a *vmv1.VirtualMachineAttachedDiskStatus) { a.Reason = "other" }), want: false},
+		{name: "message_differs", a: &base, b: with(func(a *vmv1.VirtualMachineAttachedDiskStatus) { a.Message = "other" }), want: false},
+		{name: "only_hotpluggable_differs", a: &base, b: with(func(a *vmv1.VirtualMachineAttachedDiskStatus) { a.Hotpluggable = ptr.To(false) }), want: false},
+		{name: "hotpluggable_nil_equals_false", a: with(func(a *vmv1.VirtualMachineAttachedDiskStatus) { a.Hotpluggable = nil }), b: with(func(a *vmv1.VirtualMachineAttachedDiskStatus) { a.Hotpluggable = ptr.To(false) }), want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := attachmentStatusEqual(tc.a, tc.b); got != tc.want {
+				t.Errorf("attachmentStatusEqual() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDescribeAttachment(t *testing.T) {
+	tests := []struct {
+		name     string
+		observed bool
+		status   *vmv1.VirtualMachineAttachedDiskStatus
+		want     string
+	}{
+		{
+			name:     "nothing_observed",
+			observed: false,
+			want:     `Latest status for disk "disk": no attachment status observed during the wait`,
+		},
+		{
+			name:     "observed_not_listed",
+			observed: true,
+			want:     `Latest status for disk "disk": not listed in VM status.disks.attachments`,
+		},
+		{
+			name:     "phase_only",
+			observed: true,
+			status:   &vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseUnknown},
+			want:     "Latest status for disk \"disk\":\n Phase: \"Unknown\"\n Hotpluggable: true",
+		},
+		{
+			name:     "all_fields",
+			observed: true,
+			status:   &vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseAttaching, Reason: "SuccessfulCreate", Message: "Created pod"},
+			want:     "Latest status for disk \"disk\":\n Phase: \"Attaching\"\n Hotpluggable: true\n Reason: \"SuccessfulCreate\"\n Message: \"Created pod\"",
+		},
+		{
+			name:     "reason_only",
+			observed: true,
+			status:   &vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseAttaching, Reason: "SuccessfulCreate"},
+			want:     "Latest status for disk \"disk\":\n Phase: \"Attaching\"\n Hotpluggable: true\n Reason: \"SuccessfulCreate\"",
+		},
+		{
+			name:     "message_only",
+			observed: true,
+			status:   &vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseAttaching, Message: "Created pod"},
+			want:     "Latest status for disk \"disk\":\n Phase: \"Attaching\"\n Hotpluggable: true\n Message: \"Created pod\"",
+		},
+		{
+			name:     "message_with_quotes_and_newline_is_escaped",
+			observed: true,
+			status:   &vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseAttaching, Message: "pod \"hp-x\" failed\nretrying"},
+			want:     "Latest status for disk \"disk\":\n Phase: \"Attaching\"\n Hotpluggable: true\n Message: \"pod \\\"hp-x\\\" failed\\nretrying\"",
+		},
+		{
+			name:     "coldplug_entry_hotpluggable_nil",
+			observed: true,
+			status:   &vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Phase: vmv1.AttachedDiskPhaseReady},
+			want:     "Latest status for disk \"disk\":\n Phase: \"Ready\"\n Hotpluggable: false",
+		},
+		{
+			name:     "coldplug_entry_hotpluggable_false",
+			observed: true,
+			status:   &vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Hotpluggable: ptr.To(false), Phase: vmv1.AttachedDiskPhaseReady},
+			want:     "Latest status for disk \"disk\":\n Phase: \"Ready\"\n Hotpluggable: false",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := describeAttachment("disk", tc.observed, tc.status); got != tc.want {
+				t.Errorf("describeAttachment() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// singleWatchClient hands out a test-controlled watch so the real wait.Waiter
+// can be driven event by event.
+type singleWatchClient struct {
+	client.WithWatch
+	w watch.Interface
+}
+
+func (c singleWatchClient) Watch(context.Context, client.ObjectList, ...client.ListOption) (watch.Interface, error) {
+	return c.w, nil
+}
+
+type discardWaiterLogger struct{}
+
+func (discardWaiterLogger) Info(string, ...any) {}
+
+// newRealWaiterDisks returns Disks backed by the real wait.Waiter, the watch
+// and clock that drive it, and the debug log it writes.
+func newRealWaiterDisks() (*Disks, *watch.FakeWatcher, *clock.FakeClock, *bytes.Buffer) {
+	c := test.FakeClient()
+	fw := watch.NewFakeWithChanSize(10, false)
+	fc := clock.NewFakeClock(time.Now())
+	waiter := &wait.Waiter{Client: singleWatchClient{WithWatch: c, w: fw}, Clock: fc, Logger: discardWaiterLogger{}, ProjectID: projectID}
+
+	logs := &bytes.Buffer{}
+	l := cfboshlog.New(boshlog.NewWriterLogger(boshlog.LevelDebug, logs))
+	d := NewDisks(c, projectID, service.NewCPIFinder(c, projectID), l, uuidGen, &statefulMockAgentService{}, waiter, &mockVMService{}, &test.Timeout, false, true, true, &statefulMockMetadataClient{})
+	return d, fw, fc, logs
+}
+
+func TestWaitForHotplug_TimeoutReportsLatestObservedStatus(t *testing.T) {
+	vmWithStatus := func(attachments ...vmv1.VirtualMachineAttachedDiskStatus) *vmv1.VirtualMachine {
+		vm := virtualMachine("vm")
+		vm.Namespace = projectID
+		if attachments != nil {
+			vm.Status.Disks = &vmv1.VirtualMachineAttachedDisksInfo{Attachments: attachments}
+		}
+		return vm
+	}
+	attaching := func(reason string) vmv1.VirtualMachineAttachedDiskStatus {
+		return vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseAttaching, Reason: reason, Message: "msg " + reason}
+	}
+
+	d, fw, fc, logs := newRealWaiterDisks()
+
+	// The status changes several times, disappears once, and is still
+	// attaching when the wait times out.
+	fw.Modify(vmWithStatus(attaching("first")))
+	fw.Modify(vmWithStatus(attaching("first"))) // unchanged: not logged again
+	fw.Modify(vmWithStatus(attaching("second")))
+	fw.Modify(vmWithStatus(vmv1.VirtualMachineAttachedDiskStatus{Name: "other-disk", Hotpluggable: ptr.To(true)}))
+	fw.Modify(vmWithStatus(attaching("latest")))
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.waitForHotplug(context.Background(), diskOperationAttach, "vm", "disk") }()
+
+	// Time out only after the waiter has armed its timer and drained every
+	// event; the checker for the last event finishes before the waiter's next
+	// select, so the timeout cannot overtake it.
+	deadline := time.Now().Add(10 * time.Second)
+	for !fc.HasWaiters() || len(fw.ResultChan()) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("waiter did not consume the watch events")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	fc.Step(24 * time.Hour)
+
+	err := <-errCh
+	want := "timed out waiting on \"vm\", stopping the watch.\n" +
+		"Latest status for disk \"disk\":\n" +
+		" Phase: \"Attaching\"\n" +
+		" Hotpluggable: true\n" +
+		" Reason: \"latest\"\n" +
+		" Message: \"msg latest\""
+	if err == nil || err.Error() != want {
+		t.Fatalf("got error %v, want %q", err, want)
+	}
+
+	if got := strings.Count(logs.String(), `disk "disk" on VM "vm"`); got != 4 {
+		t.Errorf("got %d attachment status log lines, want 4 (first, second, no status, latest):\n%s", got, logs.String())
+	}
+	if !strings.Contains(logs.String(), `disk "disk" on VM "vm": no attachment status`) {
+		t.Errorf("want a log line when the attachment status disappears, got:\n%s", logs.String())
+	}
+}
+
+func TestWaitForHotplug_VMBeingDeletedStopsTheWait(t *testing.T) {
+	deleting := func(attachments ...vmv1.VirtualMachineAttachedDiskStatus) *vmv1.VirtualMachine {
+		vm := virtualMachine("vm")
+		vm.Namespace = projectID
+		vm.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+		vm.Finalizers = []string{"test/finalizer"}
+		vm.Status.Disks = &vmv1.VirtualMachineAttachedDisksInfo{Attachments: attachments}
+		return vm
+	}
+
+	tests := []struct {
+		name string
+		op   diskOperation
+		vm   *vmv1.VirtualMachine
+		want string
+	}{
+		{
+			// Without the check this would wait out the attach timeout.
+			name: "attach_while_still_attaching",
+			op:   diskOperationAttach,
+			vm:   deleting(vmv1.VirtualMachineAttachedDiskStatus{Name: "disk", Hotpluggable: ptr.To(true), Phase: vmv1.AttachedDiskPhaseAttaching}),
+			want: "check object condition: VM \"vm\" is being deleted.\n" +
+				"Latest status for disk \"disk\":\n" +
+				" Phase: \"Attaching\"\n" +
+				" Hotpluggable: true",
+		},
+		{
+			// Without the check the missing hotplug entry would count as a
+			// successful detach.
+			name: "detach_after_hotplug_entry_is_gone",
+			op:   diskOperationDetach,
+			vm:   deleting(),
+			want: "check object condition: VM \"vm\" is being deleted.\n" +
+				"Latest status for disk \"disk\": not listed in VM status.disks.attachments",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, fw, _, _ := newRealWaiterDisks()
+			fw.Modify(tc.vm)
+
+			err := d.waitForHotplug(context.Background(), tc.op, "vm", "disk")
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("got error %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestWaitForHotplug_UnsupportedOperation(t *testing.T) {
+	d, _, _, _ := newRealWaiterDisks()
+	err := d.waitForHotplug(context.Background(), diskOperation("resize"), "vm", "disk")
+	if want := `unsupported disk operation "resize"`; err == nil || err.Error() != want {
+		t.Fatalf("got error %v, want %q", err, want)
+	}
+}
+
+func TestDiskOperationLogTag(t *testing.T) {
+	for op, want := range map[diskOperation]string{
+		diskOperationAttach:     "AttachDisk",
+		diskOperationDetach:     "DetachDisk",
+		diskOperation("resize"): "resize",
+	} {
+		if got := op.logTag(); got != want {
+			t.Errorf("diskOperation(%q).logTag() = %q, want %q", op, got, want)
+		}
+	}
+}
+
+func TestDetachDisk_HotplugWaitFailures(t *testing.T) {
+	vmCID := apiv1.NewVMCID("vm")
+	diskCID := apiv1.NewDiskCID("disk")
+	watchSetupErr := errors.New("set up watch: connection refused")
+
+	tests := []struct {
+		name            string
+		setup           func(w *mock.MockWaiter, vm *vmv1.VirtualMachine)
+		wantErrIs       error
+		wantErrContains []string
+	}{
+		{
+			// The wait fails because the VM is gone (the mock waiter reports
+			// "not found"; the real waiter case is covered by
+			// TestWaitForHotplug_VMBeingDeletedStopsTheWait). DetachDisk must
+			// return that failure instead of updating the agent env of a VM that
+			// no longer exists.
+			name: "vm_deleted_during_wait",
+			setup: func(w *mock.MockWaiter, vm *vmv1.VirtualMachine) {
+				w.TargetObjects["VirtualMachine"] = vm
+				w.ServerSideActions["VirtualMachine"] = func(ctx context.Context, cl client.Client) error {
+					return cl.Delete(ctx, vm.DeepCopy())
+				}
+			},
+			wantErrContains: []string{
+				"wait for disk detachment",
+				"not found",
+				`Latest status for disk "disk": no attachment status observed during the wait`,
+			},
+		},
+		{
+			// A failure that is not a timeout keeps the original error wrapped
+			// and still gets the status line.
+			name: "watch_setup_fails",
+			setup: func(w *mock.MockWaiter, _ *vmv1.VirtualMachine) {
+				w.Err = watchSetupErr
+			},
+			wantErrIs: watchSetupErr,
+			wantErrContains: []string{
+				"wait for disk detachment: set up watch: connection refused.\n" +
+					`Latest status for disk "disk": no attachment status observed during the wait`,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := virtualMachine(vmCID.AsString())
+			vm.Status.State = vmv1.VirtualMachineStateRunning
+			vm.Spec.Disks = []vmv1.DiskAttachment{
+				{VirtualMachineDiskRef: v1.LocalObjectReference{Name: diskCID.AsString()}},
+			}
+			disk := virtualMachineDisk(diskCID.AsString())
+			vmAccess := virtualMachineExternalAccess(vmCID.AsString())
+
+			c := test.FakeClient(vm, disk, vmAccess)
+			mockMetadataClient := &statefulMockMetadataClient{}
+			waiter := mock.NewMockWaiter(c, projectID)
+			tc.setup(waiter, vm)
+
+			disks := NewDisks(c, projectID, service.NewCPIFinder(c, projectID), logger, uuidGen, &statefulMockAgentService{}, waiter, &mockVMService{client: c}, &test.Timeout, false, true, true, mockMetadataClient)
+			err := disks.DetachDisk(vmCID, diskCID)
+			if err == nil {
+				t.Fatal("got nil error, want error")
+			}
+			if tc.wantErrIs != nil && !errors.Is(err, tc.wantErrIs) {
+				t.Errorf("got error %v, want it to wrap %v", err, tc.wantErrIs)
+			}
+			for _, want := range tc.wantErrContains {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("got error %q, want it to contain %q", err.Error(), want)
+				}
+			}
+			if mockMetadataClient.storedAgentEnv != nil {
+				t.Errorf("agent env was updated after the wait failed: %+v", mockMetadataClient.storedAgentEnv)
 			}
 		})
 	}
