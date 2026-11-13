@@ -206,7 +206,7 @@ resolve_version() {
   echo "  Source:           ${source}"
   echo "  Latest Final Tag: ${latest_tag:-none}"
   echo "  New Commits:      ${commits_since_tag} (has_new_commits=${has_new_commits})"
-  if [[ "${has_new_commits}" == "false" && "${FORCE_RELEASE}" != "true" ]]; then
+  if [[ "${RELEASE_MODE}" == "release" && "${has_new_commits}" == "false" && "${FORCE_RELEASE}" != "true" ]]; then
     echo "[INFO] No new commits since latest release tag '${latest_tag}'; release artifact publishing will be skipped."
   fi
 
@@ -478,7 +478,7 @@ publish_release_stage() {
   # shellcheck disable=SC1090
   source "${commit_check_file}"
 
-  if [[ "${has_new_commits:-true}" == "false" && "${FORCE_RELEASE}" != "true" ]]; then
+  if [[ "${RELEASE_MODE}" == "release" && "${has_new_commits:-true}" == "false" && "${FORCE_RELEASE}" != "true" ]]; then
     echo "[INFO] No new commits found between latest release tag '${latest_tag}' and current HEAD ($(git rev-parse --short HEAD)); skipping release artifact publishing to GCS and GitHub Releases."
     if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
       {

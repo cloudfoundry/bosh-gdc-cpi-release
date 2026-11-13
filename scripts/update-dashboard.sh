@@ -28,7 +28,7 @@ if [[ ! -f "${RUNS_JSON}" ]]; then
   echo "[]" >"${RUNS_JSON}"
 fi
 
-if [[ "${HAS_NEW_COMMITS:-true}" == "false" && "${FORCE_RELEASE:-false}" != "true" ]]; then
+if [[ "${RELEASE_MODE:-snapshot}" == "release" && "${HAS_NEW_COMMITS:-true}" == "false" && "${FORCE_RELEASE:-false}" != "true" ]]; then
   echo "[INFO] No new commits since latest release tag '${LATEST_TAG:-unknown}'; skipping dashboard update."
   exit 0
 fi
@@ -131,7 +131,12 @@ if curl -fsSL --max-time 10 "${GH_AUTH_HEADER[@]}" "https://api.github.com/repos
     active_sha="$(echo "${active_run_json}" | jq -r '.head_sha // ""' | cut -c1-7)"
 
     active_mode="snapshot"
-    [[ "${active_event}" == "schedule" ]] && active_mode="release"
+    if [[ "${active_event}" == "schedule" ]]; then
+      active_day="$(TZ=America/Los_Angeles date -d "${active_started}" +%-d 2>/dev/null || date -u +%-d)"
+      if [[ "${active_day}" == "1" || "${active_day}" == "15" ]]; then
+        active_mode="release"
+      fi
+    fi
     active_ver="v0.1.1-dev.${active_sha}"
     s_build="running"
     s_concourse="pending"
@@ -172,6 +177,9 @@ if curl -fsSL --max-time 10 "${GH_AUTH_HEADER[@]}" "https://api.github.com/repos
       s_vuln="${s_build}"
       s_release="$(map_gh_job "Release CPI Artifact")"
       rm -f "${RUNS_JSON}.jobs"
+      if [[ "${s_build}" == "skipped" ]]; then
+        continue
+      fi
     fi
 
     start_ts="$(date -d "${active_started}" +%s 2>/dev/null || echo "${END_EPOCH}")"

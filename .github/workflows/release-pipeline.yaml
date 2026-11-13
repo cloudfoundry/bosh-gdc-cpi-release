@@ -6,8 +6,10 @@ name: CFBOSH GDC release pipeline
 
 on:
   schedule:
-    # Run once every two weeks (1st and 15th of every month at 00:00 UTC, matching GitOnBorg schedule)
-    - cron: '0 0 1,15 * *'
+    # Nightly snapshot run: Monday through Thursday at 12:00 AM PST (08:00 UTC)
+    - cron: '0 8 * * 1-4'
+    # Biweekly official SemVer release: 1st and 15th of every month at 12:00 AM PST (08:00 UTC, matching GitOnBorg schedule)
+    - cron: '0 8 1,15 * *'
   workflow_dispatch:
     inputs:
       release_mode:
@@ -55,7 +57,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: cfbosh-gdc-release-pipeline-${{ github.ref }}
+  group: cfbosh-gdc-release-pipeline-${{ github.ref }}-${{ github.event.schedule || 'dispatch' }}
   cancel-in-progress: false
 
 jobs:
@@ -91,6 +93,7 @@ jobs:
         id: init
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
           INPUT_RELEASE_MODE: ${{ github.event.inputs.release_mode }}
           INPUT_VERSION: ${{ github.event.inputs.version }}
           INPUT_NEXT_VERSION: ${{ github.event.inputs.next_version }}
@@ -113,8 +116,29 @@ jobs:
           ALLOW_BRANCH="false"
 
           if [[ "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
-            echo "[INFO] Triggered by biweekly schedule (0 0 1,15 * *); running official SemVer release."
-            RELEASE_MODE="release"
+            SCHEDULE_DAY="$(TZ=America/Los_Angeles date +%-d)"
+            if [[ "${GITHUB_EVENT_SCHEDULE:-}" == "0 8 1,15 * *" ]]; then
+              echo "[INFO] Triggered by biweekly release schedule (${GITHUB_EVENT_SCHEDULE}) on day ${SCHEDULE_DAY} (12:00 AM PST); running official SemVer release."
+              RELEASE_MODE="release"
+            elif [[ "${SCHEDULE_DAY}" == "1" || "${SCHEDULE_DAY}" == "15" ]]; then
+              echo "[INFO] Skipping nightly snapshot schedule (${GITHUB_EVENT_SCHEDULE:-0 8 * * 1-4}) on day ${SCHEDULE_DAY} because the biweekly release schedule (0 8 1,15 * *) runs on the 1st and 15th."
+              {
+                echo "should_run=false"
+                echo "skip_concourse=${SKIP_CONCOURSE}"
+                echo "concourse_wait_for=${CONCOURSE_WAIT_FOR}"
+                echo "release_mode=snapshot"
+                echo "explicit_version=${EXPLICIT_VERSION}"
+                echo "next_version_mode=${NEXT_VERSION_MODE}"
+                echo "target_ref=${TARGET_REF}"
+                echo "target_branch=${TARGET_BRANCH}"
+                echo "allow_branch=${ALLOW_BRANCH}"
+                echo "start_epoch=${START_EPOCH}"
+              } >>"${GITHUB_OUTPUT}"
+              exit 0
+            else
+              echo "[INFO] Triggered by Monday-Thursday nightly schedule (${GITHUB_EVENT_SCHEDULE:-0 8 * * 1-4}) on day ${SCHEDULE_DAY} (12:00 AM PST); running snapshot qualification."
+              RELEASE_MODE="snapshot"
+            fi
           elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             if ! is_authorized_maintainer "${GITHUB_ACTOR}" ""; then
               echo "::error::User '${GITHUB_ACTOR}' is not authorized to trigger the release pipeline."
@@ -185,7 +209,7 @@ jobs:
     needs: [prepare]
     if: >-
       needs.prepare.outputs.should_run == 'true' &&
-      needs.prepare.outputs.has_new_commits == 'true'
+      (needs.prepare.outputs.release_mode != 'release' || needs.prepare.outputs.has_new_commits == 'true')
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -232,7 +256,9 @@ jobs:
   build_candidate:
     name: 2. Build Candidate CPI & Scan Vulnerabilities
     needs: [prepare]
-    if: needs.prepare.outputs.should_run == 'true'
+    if: >-
+      needs.prepare.outputs.should_run == 'true' &&
+      (needs.prepare.outputs.release_mode != 'release' || needs.prepare.outputs.has_new_commits == 'true')
     runs-on: ubuntu-latest
     environment: cfbosh-staging
     timeout-minutes: 30
@@ -283,7 +309,10 @@ jobs:
   concourse:
     name: 3. Run Concourse Deployment Pipeline (GKE)
     needs: [prepare, build_candidate]
-    if: needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.skip_concourse != 'true'
+    if: >-
+      needs.prepare.outputs.should_run == 'true' &&
+      needs.prepare.outputs.skip_concourse != 'true' &&
+      (needs.prepare.outputs.release_mode != 'release' || needs.prepare.outputs.has_new_commits == 'true')
     runs-on: ubuntu-latest
     environment: cfbosh-staging
     timeout-minutes: 360
@@ -332,7 +361,7 @@ jobs:
     if: >-
       always() &&
       needs.prepare.outputs.should_run == 'true' &&
-      needs.prepare.outputs.has_new_commits == 'true' &&
+      (needs.prepare.outputs.release_mode != 'release' || needs.prepare.outputs.has_new_commits == 'true') &&
       needs.build_candidate.result == 'success' &&
       (needs.concourse.result == 'success' || (needs.concourse.result == 'skipped' && needs.prepare.outputs.skip_concourse == 'true' && needs.prepare.outputs.release_mode != 'release'))
     runs-on: ubuntu-latest
@@ -391,7 +420,7 @@ jobs:
     if: >-
       always() &&
       needs.prepare.outputs.should_run == 'true' &&
-      needs.prepare.outputs.has_new_commits == 'true'
+      (needs.prepare.outputs.release_mode != 'release' || needs.prepare.outputs.has_new_commits == 'true')
     runs-on: ubuntu-latest
     environment:
       name: github-pages

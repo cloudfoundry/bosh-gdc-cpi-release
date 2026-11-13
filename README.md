@@ -182,8 +182,9 @@ The **`CFBOSH GDC release pipeline`** automates end-to-end BOSH CPI release pack
   - **`release` mode (`vX.Y.Z`)**: Only allowed on `main` (via the biweekly schedule or manual `workflow_dispatch` on `main`), and always runs the Concourse stage (`skip_concourse` is rejected in `release` mode). Runs the full pipeline and publishes the official SemVer GitHub Release (`vX.Y.Z` tag) and `bosh.io` final-release metadata (`releases/`, `.final_builds/`).
 - **Who can trigger it**: manual runs (`workflow_dispatch` on `main`) are accepted only from users listed in [`OWNERS_ALIASES`](OWNERS_ALIASES) / [`CODEOWNERS`](CODEOWNERS) **as committed on `main`** (least privilege; organization or collaborator status alone is not sufficient). The Concourse stage runs on an internal, maintainer-operated Concourse instance deploying to the GDC staging environment, so it is not available to external contributors; the `CI` and `Presubmit Integration Test` workflows are the Pull Request checks. Changes reach Concourse only after they are merged to `main`.
 - **How to Trigger the Release Pipeline**:
-  1. **Automated Biweekly Schedule (`schedule`)**:
-     - Runs automatically on the 1st and 15th of each month at `00:00 UTC` (`0 0 1,15 * *`), in `release` mode on `main` (biweekly release cadence).
+  1. **Automated Nightly & Biweekly Schedule (`schedule`)**:
+     - **Nightly Snapshot Qualification (`0 8 * * 1-4`)**: Runs automatically Monday through Thursday at `12:00 AM PST` (`08:00 UTC`) in `snapshot` mode on `main`. Automatically skips when the date is the `1st` or `15th` of the month so it never runs in parallel or twice on biweekly release days.
+     - **Biweekly Official Release (`0 8 1,15 * *`)**: Runs automatically on the 1st and 15th of each month at `12:00 AM PST` (`08:00 UTC`) in `release` mode on `main` (biweekly release cadence).
   2. **Manual Trigger from GitHub Actions UI (`workflow_dispatch`)**:
      - Navigate to [**Actions &rarr; CFBOSH GDC release pipeline &rarr; Run workflow**](https://github.com/cloudfoundry/bosh-gdc-cpi-release/actions/workflows/release-pipeline.yaml) and configure the following inputs:
        | Input | Options / Type | Default | Description |
