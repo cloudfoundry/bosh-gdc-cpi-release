@@ -53,11 +53,25 @@ const (
 	diskSnapshotBackupPlanTemplate = "disk-snapshot-bpt"
 )
 
+// diskOperation names an attach or detach in errors and logs.
+type diskOperation string
+
 const (
-	// Disk operation types
-	diskOperationAttach = "attach"
-	diskOperationDetach = "detach"
+	diskOperationAttach diskOperation = "attach"
+	diskOperationDetach diskOperation = "detach"
 )
+
+// logTag returns the logger tag for the operation.
+func (op diskOperation) logTag() string {
+	switch op {
+	case diskOperationAttach:
+		return "AttachDisk"
+	case diskOperationDetach:
+		return "DetachDisk"
+	default:
+		return string(op)
+	}
+}
 
 type objectFinder interface {
 	HasDisk(ctx context.Context, diskID string) (bool, error)
@@ -314,7 +328,7 @@ func (d *Disks) AttachDiskV2(vmCID apiv1.VMCID, diskCID apiv1.DiskCID) (apiv1.Di
 	running := isVMRunning(vm)
 	if d.useDiskHotplug {
 		if running {
-			if err := d.waitForHotDiskAttachment(ctx, vm.Name, diskCID.AsString()); err != nil {
+			if err := d.waitForHotplug(ctx, diskOperationAttach, vm.Name, diskCID.AsString()); err != nil {
 				return apiv1.DiskHint{}, fmt.Errorf("wait for disk attachment: %w", err)
 			}
 		}
@@ -448,7 +462,7 @@ func (d *Disks) DetachDisk(vmCID apiv1.VMCID, diskCID apiv1.DiskCID) error {
 	running := isVMRunning(vm)
 	if d.useDiskHotplug {
 		if running {
-			if err := d.waitForHotDiskDetachment(ctx, vm.Name, diskCID.AsString()); err != nil {
+			if err := d.waitForHotplug(ctx, diskOperationDetach, vm.Name, diskCID.AsString()); err != nil {
 				return fmt.Errorf("wait for disk detachment: %w", err)
 			}
 		}
@@ -753,43 +767,143 @@ func (d *Disks) getTimestamp() int64 {
 	return d.clock.Now().Unix()
 }
 
-func (d *Disks) waitForHotDiskAttachment(ctx context.Context, vmName, diskName string) error {
-	diskAttachmentReadyChecker := func(obj client.Object) (bool, error) {
+// waitForHotplug waits for a hotplug attach or detach of diskName on a running
+// VM to finish. If the wait fails (for example on timeout), the error includes
+// the disk's last attachment status the watch saw, so the caller can tell why
+// the operation is stuck without reading the VM themselves.
+//
+// The VM is deliberately not re-read after the wait fails: the watch already
+// delivers the VM's latest state (it re-lists when it reconnects), and a
+// re-read would hide the original failure when the VM is gone.
+func (d *Disks) waitForHotplug(ctx context.Context, op diskOperation, vmName, diskName string) error {
+	var (
+		done    func(*vmv1.VirtualMachineAttachedDiskStatus) bool
+		hotOnly bool
+		timeout int32
+	)
+	switch op {
+	case diskOperationAttach:
+		done, hotOnly, timeout = hotAttachDone, false, d.timeout.HotDiskAttachment
+	case diskOperationDetach:
+		// Detach only waits for the hotpluggable entry to go away; a coldplug
+		// entry with the same name is not part of the hotplug and is ignored,
+		// as before.
+		done, hotOnly, timeout = hotDetachDone, true, d.timeout.HotDiskDetachment
+	default:
+		return fmt.Errorf("unsupported disk operation %q", op)
+	}
+
+	var (
+		observed bool
+		last     *vmv1.VirtualMachineAttachedDiskStatus
+	)
+	checker := func(obj client.Object) (bool, error) {
 		vm, ok := obj.(*vmv1.VirtualMachine)
 		if !ok {
 			return false, fmt.Errorf("convert obj to VirtualMachine: %v", obj)
 		}
-		if vm.Status.Disks == nil {
-			return false, nil
+		cur := findAttachmentStatus(vm, diskName, hotOnly)
+		if !observed || !attachmentStatusEqual(last, cur) {
+			d.logAttachmentStatus(op, vmName, diskName, cur)
 		}
-		for _, diskAttachment := range vm.Status.Disks.Attachments {
-			if diskAttachment.Hotpluggable != nil && *diskAttachment.Hotpluggable && diskAttachment.Name == diskName && diskAttachment.Phase == vmv1.AttachedDiskPhaseReady {
-				return true, nil
-			}
+		observed, last = true, cur
+		// A deleted VM shows up as one last event with its final state, not as
+		// a "not found" error. Stop on it rather than waiting out the timeout
+		// or, for a detach, mistaking the deletion for success.
+		if vm.DeletionTimestamp != nil {
+			return false, fmt.Errorf("VM %q is being deleted", vmName)
 		}
-		return false, nil
+		return done(cur), nil
 	}
-	return d.waiter.Until(ctx, diskAttachmentReadyChecker, vmName, &vmv1.VirtualMachine{}, time.Duration(d.timeout.HotDiskAttachment)*time.Minute)
+
+	// The waiter runs the checker on its own goroutine but has stopped calling
+	// it by the time Until returns, so reading observed and last here is safe.
+	if err := d.waiter.Until(ctx, checker, vmName, &vmv1.VirtualMachine{}, time.Duration(timeout)*time.Minute); err != nil {
+		return fmt.Errorf("%w.\n%s", err, describeAttachment(diskName, observed, last))
+	}
+	return nil
 }
 
-func (d *Disks) waitForHotDiskDetachment(ctx context.Context, vmName, diskName string) error {
-	diskDetachmentChecker := func(obj client.Object) (bool, error) {
-		vm, ok := obj.(*vmv1.VirtualMachine)
-		if !ok {
-			return false, fmt.Errorf("convert obj to VirtualMachine: %v", obj)
-		}
-		if vm.Status.Disks == nil {
-			return true, nil
-		}
-		for _, diskAttachment := range vm.Status.Disks.Attachments {
-			if diskAttachment.Hotpluggable != nil && *diskAttachment.Hotpluggable && diskAttachment.Name == diskName {
-				return false, nil
-			}
-		}
+// hotAttachDone reports whether a hotplug attach is complete: the disk has a
+// hotpluggable attachment in the Ready phase.
+func hotAttachDone(a *vmv1.VirtualMachineAttachedDiskStatus) bool {
+	return a != nil && isHotpluggable(a) && a.Phase == vmv1.AttachedDiskPhaseReady
+}
 
-		return true, nil
+// hotDetachDone reports whether a hotplug detach is complete: the disk no longer
+// has a hotpluggable attachment.
+func hotDetachDone(a *vmv1.VirtualMachineAttachedDiskStatus) bool {
+	return a == nil
+}
+
+// logAttachmentStatus logs the disk's attachment status at debug level.
+func (d *Disks) logAttachmentStatus(op diskOperation, vmName, diskName string, a *vmv1.VirtualMachineAttachedDiskStatus) {
+	if a == nil {
+		d.logger.Debug(op.logTag(), "disk %q on VM %q: no attachment status", diskName, vmName)
+		return
 	}
-	return d.waiter.Until(ctx, diskDetachmentChecker, vmName, &vmv1.VirtualMachine{}, time.Duration(d.timeout.HotDiskDetachment)*time.Minute)
+	d.logger.Debug(op.logTag(), "disk %q on VM %q: phase %q, reason %q, message %q, hotpluggable %t", diskName, vmName, a.Phase, a.Reason, a.Message, isHotpluggable(a))
+}
+
+// findAttachmentStatus returns a copy of the status entry for diskName in
+// vm.Status.Disks. The first hotpluggable entry wins; otherwise the first
+// coldplug entry is returned, unless hotOnly is set. It returns nil when
+// nothing matches.
+func findAttachmentStatus(vm *vmv1.VirtualMachine, diskName string, hotOnly bool) *vmv1.VirtualMachineAttachedDiskStatus {
+	if vm == nil || vm.Status.Disks == nil {
+		return nil
+	}
+	var match *vmv1.VirtualMachineAttachedDiskStatus
+	for i := range vm.Status.Disks.Attachments {
+		a := &vm.Status.Disks.Attachments[i]
+		if a.Name != diskName {
+			continue
+		}
+		if isHotpluggable(a) {
+			return a.DeepCopy()
+		}
+		if !hotOnly && match == nil {
+			match = a
+		}
+	}
+	if match == nil {
+		return nil
+	}
+	return match.DeepCopy()
+}
+
+func isHotpluggable(a *vmv1.VirtualMachineAttachedDiskStatus) bool {
+	return a.Hotpluggable != nil && *a.Hotpluggable
+}
+
+// attachmentStatusEqual reports whether two observations carry the same
+// status, so unchanged statuses are not logged again.
+func attachmentStatusEqual(a, b *vmv1.VirtualMachineAttachedDiskStatus) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Phase == b.Phase && a.Reason == b.Reason && a.Message == b.Message && isHotpluggable(a) == isHotpluggable(b)
+}
+
+// describeAttachment formats the last attachment status seen during a wait for
+// an error message. observed is false when the wait ended before the watch
+// delivered the VM at all.
+func describeAttachment(diskName string, observed bool, a *vmv1.VirtualMachineAttachedDiskStatus) string {
+	if !observed {
+		return fmt.Sprintf("Latest status for disk %q: no attachment status observed during the wait", diskName)
+	}
+	if a == nil {
+		return fmt.Sprintf("Latest status for disk %q: not listed in VM status.disks.attachments", diskName)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Latest status for disk %q:\n Phase: %q\n Hotpluggable: %t", diskName, a.Phase, isHotpluggable(a))
+	if a.Reason != "" {
+		fmt.Fprintf(&b, "\n Reason: %q", a.Reason)
+	}
+	if a.Message != "" {
+		fmt.Fprintf(&b, "\n Message: %q", a.Message)
+	}
+	return b.String()
 }
 
 func (d *Disks) stopVM(ctx context.Context, vmName string) {
@@ -812,7 +926,7 @@ func isVMRunning(vm *vmv1.VirtualMachine) bool {
 	return vm.Status.State == vmv1.VirtualMachineStateRunning
 }
 
-func validateVMStateForAttachDetach(vm *vmv1.VirtualMachine, op string, diskCID apiv1.DiskCID) error {
+func validateVMStateForAttachDetach(vm *vmv1.VirtualMachine, op diskOperation, diskCID apiv1.DiskCID) error {
 	if !isVMRunning(vm) && !isVMStopped(vm) {
 		return fmt.Errorf("VM %s (State: %s) is not in a valid state (running or stopped) to %s disk %s", vm.Name, vm.Status.State, op, diskCID.AsString())
 	}
