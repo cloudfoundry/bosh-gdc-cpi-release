@@ -173,7 +173,17 @@ ensure_dependencies() {
 
 rotate_concourse_sa_key() {
   local key_file_name="cfbosh-cicd-sa-key.json"
-  local service_account="cfbosh-cicd-sa@cfbosh-cicd.iam.gserviceaccount.com"
+  local service_account="${CFBOSH_CICD_SERVICE_ACCOUNT:-}"
+  if [[ -z "${service_account}" && -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && -s "${GOOGLE_APPLICATION_CREDENTIALS}" ]]; then
+    service_account="$(jq -r '.client_email // empty' "${GOOGLE_APPLICATION_CREDENTIALS}" 2>/dev/null || true)"
+  fi
+  if [[ -z "${service_account}" ]]; then
+    service_account="$(gcloud config get-value account 2>/dev/null || true)"
+  fi
+  if [[ -z "${service_account}" ]]; then
+    echo "[ERROR] Unable to determine GCP service account email for key rotation (set CFBOSH_CICD_SERVICE_ACCOUNT or GOOGLE_APPLICATION_CREDENTIALS)." >&2
+    exit 1
+  fi
   local bucket_path="gs://cfbosh-cicd/cicd_sa_keys/cfbosh-cicd-sa"
   local local_key_path="${TMP_DIR}/${key_file_name}"
 

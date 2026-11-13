@@ -17,9 +17,9 @@ The following prerequisites are required:
 
 # Concourse jobs of the deployment pipeline
 
-The job graph is visible in the Concourse Web UI (accessible on the Google corporate network):
-* **Pipeline Overview (`cfbosh-deployment`, group `all`)**: [`https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment`](https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment)
-* **Direct Job Build Logs**: `https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment/jobs/<job-name>/builds/<build-number>` (e.g., [`https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment/jobs/bosh-deployment/builds/88`](https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment/jobs/bosh-deployment/builds/88))
+The job graph is visible in the Concourse Web UI (accessible locally via `kubectl port-forward` — see [Connect to the prod deployment pipeline](#connect-to-the-prod-deployment-pipeline)):
+* **Pipeline Overview (`cfbosh-deployment`, group `all`)**: `http://127.0.0.1:8080/teams/main/pipelines/cfbosh-deployment`
+* **Direct Job Build Logs**: `http://127.0.0.1:8080/teams/main/pipelines/cfbosh-deployment/jobs/<job-name>/builds/<build-number>` (e.g., `http://127.0.0.1:8080/teams/main/pipelines/cfbosh-deployment/jobs/bosh-deployment/builds/88`)
 
 ## Concourse jobs
 
@@ -150,7 +150,7 @@ fly -t <FLY_TARGET> trigger-job -j <PIPELINE_NAME>/<JOB_NAME>
 
 > [!NOTE]
 > * Follow `Play and Test` if you are exploring rather than upgrading the prod deployment pipeline.
-> * This Concourse instance is internal: access to the web UI and to `port-forward` is limited to Google. `fly` needs the `port-forward` below.
+> * This Concourse instance is internal: access to the web UI and to `port-forward` is restricted to authorized project maintainers. `fly` needs the `port-forward` below.
 
 The deployment pipeline `cfbosh-deployment` running in the Concourse cluster `cfbosh-concourse-ci` is configured and triggered automatically by Stage 3 of the **`CFBOSH GDC release pipeline`** (`.github/workflows/release-pipeline.yaml`) via `ci/run-pipeline.sh --type prod` without developers' manual intervention. However, there are situations when maintainers need to monitor the deployment pipeline health and investigate deployment failures directly.
 

@@ -197,21 +197,21 @@ The **`CFBOSH GDC release pipeline`** automates end-to-end BOSH CPI release pack
 - **Pipeline Stages**:
   1. **Authorize & Resolve SemVer**: Verifies maintainer authorization and derives the target SemVer version/tag (`vX.Y.Z` in `release` mode or `vX.Y.Z-dev.<sha>` in `snapshot` mode) directly from repository Git tags via `scripts/_release_tag.py` (with Stage `1b` immediately publishing a live `running` entry to the dashboard).
   2. **Build Candidate CPI & Scan Vulnerabilities**: Compiles Linux and Darwin CPI binaries (`make release-binaries`), creates the BOSH CPI release archive (`scripts/create-release`), verifies `release.MF` identity (`name: bosh-gdch-cpi` and `version`) and SHA-256 digest via `scripts/_release_artifact.py`, runs `govulncheck` against the Linux CPI binary (failing the build if any finding has a published fix — see [Vulnerability Scanning](#5-vulnerability-scanning)), and uploads candidate artifacts to `gs://cfbosh-cicd/`.
-  3. **Run Concourse Deployment Pipeline (GKE)**: Connects to the GKE Concourse cluster (`cfbosh`), renders and updates the [`cfbosh-deployment`](https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment) pipeline (`ci/configure.sh`), checks the `bosh-cpi-releases` GCS resource, and triggers/watches the Concourse pipeline (`start-deployments` &rarr; `bosh-bootstrap` &rarr; `bosh-deployment` &rarr; `run-bats` / `cf-deployment` &rarr; `run-cats` &rarr; `pre-release-fan-in` &rarr; `promote-candidate`) via `ci/run-pipeline.sh`. Can be bypassed in `snapshot` mode by setting `skip_concourse: true` in case of underlying infrastructure issues.
+  3. **Run Concourse Deployment Pipeline (GKE)**: Connects to the GKE Concourse cluster (`cfbosh`), renders and updates the `cfbosh-deployment` pipeline (`ci/configure.sh`), checks the `bosh-cpi-releases` GCS resource, and triggers/watches the Concourse pipeline (`start-deployments` &rarr; `bosh-bootstrap` &rarr; `bosh-deployment` &rarr; `run-bats` / `cf-deployment` &rarr; `run-cats` &rarr; `pre-release-fan-in` &rarr; `promote-candidate`) via `ci/run-pipeline.sh`. Can be bypassed in `snapshot` mode by setting `skip_concourse: true` in case of underlying infrastructure issues.
   4. **Release CPI Artifact (GitHub Releases & bosh.io)**: In `release` mode (on `main`), publishes the verified CPI release artifacts, final-build blobs, and vulnerability report to GitHub Releases (creating the `vX.Y.Z` tag) and commits the `bosh.io` final-release metadata (`releases/`, `.final_builds/`). In `snapshot` mode, skips GitHub Release creation, git tagging, and `bosh.io` metadata commits.
   5. **Update Release Pipeline Dashboard**: Appends the run telemetry and stage statuses to `dashboard/data/runs.json`, generates the GitHub Actions job summary, and deploys the updated dashboard to GitHub Pages.
 
 #### Monitoring & Debugging Concourse Pipeline Runs
 
-When Stage 3 (`3. Run Concourse Deployment Pipeline (GKE)`) is running or fails, maintainers on the Google corporate network can inspect real-time task logs, resource checks, and step outputs directly in the **Concourse Web UI**:
+When Stage 3 (`3. Run Concourse Deployment Pipeline (GKE)`) is running or fails, maintainers can inspect real-time task logs, resource checks, and step outputs directly in the **Concourse Web UI** (accessible via `kubectl port-forward` at `http://127.0.0.1:8080` per [`ci/README.md`](ci/README.md#connect-to-the-prod-deployment-pipeline)):
 
-- **Concourse Pipeline Overview**: [`https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment`](https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment)
+- **Concourse Pipeline Overview**: `http://127.0.0.1:8080/teams/main/pipelines/cfbosh-deployment`
 - **Direct Job Build URL Pattern**:
   ```text
-  https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment/jobs/<job-name>/builds/<build-number>
+  http://127.0.0.1:8080/teams/main/pipelines/cfbosh-deployment/jobs/<job-name>/builds/<build-number>
   ```
   For example, to inspect or debug build `#88` of the `bosh-deployment` job:
-  - [`https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment/jobs/bosh-deployment/builds/88`](https://cfbosh-concourse-web.corp.goog/teams/main/pipelines/cfbosh-deployment/jobs/bosh-deployment/builds/88)
+  - `http://127.0.0.1:8080/teams/main/pipelines/cfbosh-deployment/jobs/bosh-deployment/builds/88`
 - **Locating the Build Number & Logs**:
   - The GitHub Actions log for Stage 3 (`Deploy & Execute Concourse Pipeline on GKE`) prints the active Concourse job and build number as it progresses (e.g., `bosh-deployment #88`) and streams the task output on failure.
   - Each run also records its Concourse execution log in GCS (`gs://cfbosh-cicd/cicd-deployment-logs/log_<TIMESTAMP>.md`), which is linked in the expandable run details on the [Release Dashboard](https://cloudfoundry.github.io/bosh-gdc-cpi-release/).
