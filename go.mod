@@ -2,7 +2,7 @@ module github.com/cloudfoundry/bosh-gdc-cpi-release
 
 // `version` and `sdks` for `go_download_sdk` needs to be synced with the Go minor version here
 // LINT.IfChange
-go 1.26.10
+go 1.26.11
 
 // LINT.ThenChange(/build/external/go_sdk.bzl:go_sdk)
 
