@@ -2,7 +2,6 @@
 
 aliases:
   bosh-gdc-cpi-release-google-reviewers:
-  - ajlfleos
   - sanjay-nagarur
   - dilipkumar2k6
   - daniel-sarran
@@ -14,7 +13,6 @@ aliases:
   - gowrisankar22
   - ivaylogi98
   bosh-gdc-cpi-release-google-approvers:
-  - ajlfleos
   - sanjay-nagarur
   - dilipkumar2k6
   - daniel-sarran
