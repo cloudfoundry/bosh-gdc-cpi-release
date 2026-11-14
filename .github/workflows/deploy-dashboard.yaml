@@ -11,6 +11,7 @@ on:
       - feat/concourse-pipeline
     paths:
       - 'dashboard/**'
+      - 'scripts/update-dashboard.sh'
       - '.github/workflows/deploy-dashboard.yaml'
   workflow_dispatch:
 

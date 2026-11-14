@@ -23,3 +23,4 @@ credentials:
   cfbosh-cicd-sa_key: ((cicd_sa_key_json))
 stemcell:
   script: ((stemcell_script))
+  version: ((stemcell_version))
