@@ -29,6 +29,11 @@ WAIT_JOB="${CONCOURSE_WAIT_JOB:-promote-candidate}"
 CPI_VERSION="${CPI_VERSION:-}"
 DRY_RUN="false"
 ROTATE_KEY="false"
+ATTACH_ONLY="false"
+MAX_WAIT_MINUTES="${CONCOURSE_MAX_WAIT_MINUTES:-0}"
+BASELINE_TARGET_ID_OVERRIDE=""
+BASELINE_MAX_BUILD_ID_OVERRIDE=""
+RETRIED_JOBS_INIT=" "
 STATUS_FILE="${CONCOURSE_STATUS_FILE:-/tmp/concourse-status.json}"
 
 STEMCELL_BUILDER_REPO_URL="${STEMCELL_BUILDER_REPO_URL:-https://github.com/cloudfoundry/bosh-linux-stemcell-builder.git}"
@@ -63,6 +68,13 @@ Options:
   --stemcell-version <ver> Upstream GDC Ubuntu Noble stemcell version in gs://bosh-core-stemcells-candidate/gdch/
                            (default: auto-resolved latest version)
   --status-file <path>     Output JSON file for Concourse execution metadata
+  --max-wait-minutes <min> Maximum minutes to monitor before cleanly handing off with status=in_progress
+                           (0 = unlimited; default: 0)
+  --attach-only            Attach to an already-configured active Concourse run without re-applying
+                           pipeline config or triggering start-deployments
+  --baseline-target-id <n> Baseline build ID of --wait-job from an earlier monitoring phase
+  --baseline-max-build-id <n> Baseline max build ID across jobs from an earlier monitoring phase
+  --retried-jobs <list>    Space-delimited list of jobs already retried in an earlier monitoring phase
   --rotate-key             Rotate cfbosh-cicd-sa service account key before updating pipeline
   --dry-run                Validate and render pipeline manifest without applying or triggering
   -h, --help               Show this help message
@@ -94,6 +106,26 @@ while [[ $# -gt 0 ]]; do
     ;;
   --status-file)
     STATUS_FILE="$2"
+    shift 2
+    ;;
+  --max-wait-minutes)
+    MAX_WAIT_MINUTES="$2"
+    shift 2
+    ;;
+  --attach-only)
+    ATTACH_ONLY="true"
+    shift
+    ;;
+  --baseline-target-id)
+    BASELINE_TARGET_ID_OVERRIDE="$2"
+    shift 2
+    ;;
+  --baseline-max-build-id)
+    BASELINE_MAX_BUILD_ID_OVERRIDE="$2"
+    shift 2
+    ;;
+  --retried-jobs)
+    RETRIED_JOBS_INIT=" ${2#"${2%%[![:space:]]*}"} "
     shift 2
     ;;
   --rotate-key)
@@ -300,15 +332,24 @@ trigger_and_monitor_pipeline() {
   local pre_jobs_json="[]"
   pre_jobs_json="$(fly -t "${FLY_TARGET}" jobs -p "${PIPELINE_NAME}" --json 2>/dev/null || echo '[]')"
   local active_job=""
-  active_job="$(echo "${pre_jobs_json}" | jq -r '.[] | select(.next_build.status == "started") | "\(.name) #\(.next_build.name)"' | head -n 1 || true)"
+  active_job="$(echo "${pre_jobs_json}" | jq -r '.[] | select(.name != "report-orphaned-vms" and (.next_build.status == "started" or .next_build.status == "pending")) | "\(.name) #\(.next_build.name)"' | head -n 1 || true)"
 
   local baseline_target_id=0
   baseline_target_id="$(echo "${pre_jobs_json}" | jq -r --arg j "${WAIT_JOB}" '(.[] | select(.name == $j) | .finished_build.id) // 0')"
+  if [[ -n "${BASELINE_TARGET_ID_OVERRIDE}" ]]; then
+    baseline_target_id="${BASELINE_TARGET_ID_OVERRIDE}"
+  fi
   local baseline_max_build_id=0
   baseline_max_build_id="$(echo "${pre_jobs_json}" | jq -r '[.[] | .finished_build.id // 0] | max // 0')"
+  if [[ -n "${BASELINE_MAX_BUILD_ID_OVERRIDE}" ]]; then
+    baseline_max_build_id="${BASELINE_MAX_BUILD_ID_OVERRIDE}"
+  fi
 
   local build_num=""
-  if [[ -n "${active_job}" ]]; then
+  if [[ "${ATTACH_ONLY}" == "true" ]]; then
+    build_num="$(echo "${pre_jobs_json}" | jq -r '.[] | select(.name == "start-deployments") | .finished_build.name // "latest"')"
+    echo "[INFO] Resuming monitoring of Concourse pipeline '${PIPELINE_NAME}' (${active_job:-idle}, from start-deployments #${build_num}) through '${WAIT_JOB}' (baseline build id=${baseline_target_id})..."
+  elif [[ -n "${active_job}" ]]; then
     build_num="$(echo "${pre_jobs_json}" | jq -r '.[] | select(.name == "start-deployments") | .finished_build.name // "latest"')"
     echo "[INFO] Active Concourse deployment is currently running (${active_job}, from start-deployments #${build_num}); monitoring through '${WAIT_JOB}'..."
   else
@@ -319,12 +360,15 @@ trigger_and_monitor_pipeline() {
     echo "[INFO] Triggered ${PIPELINE_NAME}/start-deployments build #${build_num:-latest}"
   fi
 
+  local final_status="success"
+  local retried_jobs="${RETRIED_JOBS_INIT}"
   if [[ "${WAIT_JOB}" != "none" ]]; then
     echo "[INFO] Monitoring Concourse pipeline '${PIPELINE_NAME}' until '${WAIT_JOB}' completes (baseline build id=${baseline_target_id})..."
     local watched_builds=" "
     local reported_finished=" "
-    local retried_jobs=" "
     local idle_polls=0
+    local monitor_start_epoch
+    monitor_start_epoch="$(date +%s)"
     while true; do
       ensure_concourse_connection
       local cur_jobs_json
@@ -372,6 +416,15 @@ trigger_and_monitor_pipeline() {
         else
           echo "[ERROR] Target Concourse job '${PIPELINE_NAME}/${WAIT_JOB}' build #${target_fin_name} finished with status '${target_fin_status}'." >&2
           exit 1
+        fi
+      fi
+
+      if ((MAX_WAIT_MINUTES > 0)); then
+        local elapsed_sec=$(($(date +%s) - monitor_start_epoch))
+        if ((elapsed_sec >= MAX_WAIT_MINUTES * 60)); then
+          echo "[WARN] Reached max wait window (${MAX_WAIT_MINUTES}m) while Concourse pipeline '${PIPELINE_NAME}' is still in progress; handing off monitoring..."
+          final_status="in_progress"
+          break
         fi
       fi
 
@@ -437,7 +490,7 @@ trigger_and_monitor_pipeline() {
   jobs_json="$(fly -t "${FLY_TARGET}" jobs -p "${PIPELINE_NAME}" --json 2>/dev/null || echo '[]')"
 
   jq -n \
-    --arg status "success" \
+    --arg status "${final_status}" \
     --arg pipeline "${PIPELINE_NAME}" \
     --arg cluster "${cluster_name}" \
     --arg start_build "${build_num:-latest}" \
@@ -458,11 +511,16 @@ trigger_and_monitor_pipeline() {
       jobs: ($jobs | map({name: .name, paused: .paused, status: (.finished_build.status // "pending"), next_status: (.next_build.status // "idle")}))
     }' >"${STATUS_FILE}"
 
+  local trimmed_retried="${retried_jobs#"${retried_jobs%%[![:space:]]*}"}"
+  trimmed_retried="${trimmed_retried%"${trimmed_retried##*[![:space:]]}"}"
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     {
-      echo "concourse_status=success"
+      echo "concourse_status=${final_status}"
       echo "concourse_build=${build_num:-latest}"
       echo "concourse_log_uri=${latest_log}"
+      echo "baseline_target_id=${baseline_target_id}"
+      echo "baseline_max_build_id=${baseline_max_build_id}"
+      echo "retried_jobs=${trimmed_retried}"
     } >>"${GITHUB_OUTPUT}"
   fi
 }
@@ -475,6 +533,12 @@ main() {
   if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
     [[ -n "${GDC_ORG:-}" ]] && echo "::add-mask::${GDC_ORG}"
     [[ -n "${GDC_CONSOLE_URL:-}" ]] && echo "::add-mask::${GDC_CONSOLE_URL}"
+  fi
+
+  if [[ "${ATTACH_ONLY}" == "true" ]]; then
+    gcloud container clusters get-credentials cfbosh --region us-east1 --project cfbosh-cicd --quiet >/dev/null 2>&1
+    trigger_and_monitor_pipeline
+    return
   fi
 
   if [[ "${ROTATE_KEY}" == "true" ]]; then

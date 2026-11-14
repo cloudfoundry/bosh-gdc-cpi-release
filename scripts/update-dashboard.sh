@@ -104,7 +104,7 @@ if curl -fsSL --max-time 10 "https://cloudfoundry.github.io/bosh-gdc-cpi-release
     jq -s '
       (.[1] + .[0])
       | group_by(.id | tostring)
-      | map(sort_by(if .status == "failure" then 0 elif .status == "success" then 1 else 2 end) | .[0])
+      | map(sort_by([(if .status == "running" then 0 else 1 end), (.timestamp // "")]) | .[-1])
     ' "${RUNS_JSON}" "${RUNS_JSON}.remote" >"${RUNS_JSON}.merged" &&
       mv "${RUNS_JSON}.merged" "${RUNS_JSON}"
   fi
@@ -164,16 +164,16 @@ if curl -fsSL --max-time 10 "${GH_AUTH_HEADER[@]}" "https://api.github.com/repos
       map_gh_job() {
         local pat="$1"
         jq -r --arg p "${pat}" '
-          ([.jobs[]? | select(.name | contains($p))][0]) as $j
-          | if $j == null then "pending"
-            elif $j.status != "completed" then "running"
-            elif $j.conclusion == "success" then "passed"
-            elif $j.conclusion == "skipped" then "skipped"
-            else "failed" end
+          [.jobs[]? | select(.name | contains($p))] as $js
+          | if ($js | length) == 0 then "pending"
+            elif any($js[]; .status != "completed") then "running"
+            elif any($js[]; .conclusion != "success" and .conclusion != "skipped") then "failed"
+            elif any($js[]; .conclusion == "success") then "passed"
+            else "skipped" end
         ' "${RUNS_JSON}.jobs"
       }
       s_build="$(map_gh_job "Build Candidate CPI")"
-      s_concourse="$(map_gh_job "Run Concourse Deployment")"
+      s_concourse="$(map_gh_job "Concourse Deployment")"
       s_vuln="${s_build}"
       s_release="$(map_gh_job "Release CPI Artifact")"
       rm -f "${RUNS_JSON}.jobs"
