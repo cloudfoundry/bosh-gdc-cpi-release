@@ -49,7 +49,7 @@ func discoverLatestStemcellVersion() string {
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
-		"https://storage.googleapis.com/storage/v1/b/bosh-core-stemcells-candidate/o?prefix=gdch/bosh-stemcell-",
+		"https://bosh.io/api/v1/stemcells/bosh-gdch-kvm-ubuntu-noble",
 		nil,
 	)
 	if err == nil {
@@ -57,24 +57,22 @@ func discoverLatestStemcellVersion() string {
 		if err == nil {
 			defer resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				var listing struct {
-					Items []struct {
-						Name string `json:"name"`
-					} `json:"items"`
+				var entries []struct {
+					Name    string `json:"name"`
+					Version string `json:"version"`
 				}
-				if err := json.NewDecoder(resp.Body).Decode(&listing); err == nil {
-					re := regexp.MustCompile(`^gdch/bosh-stemcell-([0-9]+\.[0-9]+)-gdch-kvm-ubuntu-noble\.tgz$`)
+				if err := json.NewDecoder(resp.Body).Decode(&entries); err == nil {
+					re := regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
 					var latest string
 					var latestMaj, latestMin int
-					for _, item := range listing.Items {
-						m := re.FindStringSubmatch(item.Name)
-						if len(m) != 2 {
+					for _, item := range entries {
+						if item.Name != "bosh-gdch-kvm-ubuntu-noble" || !re.MatchString(item.Version) {
 							continue
 						}
 						var maj, min int
-						if _, err := fmt.Sscanf(m[1], "%d.%d", &maj, &min); err == nil {
+						if _, err := fmt.Sscanf(item.Version, "%d.%d", &maj, &min); err == nil {
 							if latest == "" || maj > latestMaj || (maj == latestMaj && min > latestMin) {
-								latest = m[1]
+								latest = item.Version
 								latestMaj = maj
 								latestMin = min
 							}

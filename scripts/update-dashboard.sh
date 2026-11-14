@@ -72,6 +72,11 @@ elif [[ -z "${OVERALL_STATUS}" ]]; then
   fi
 fi
 
+STEMCELL_VERSION_VAL="${STEMCELL_VERSION:-}"
+if [[ "${SKIP_CONCOURSE:-false}" == "true" || ("${OVERALL_STATUS}" != "running" && "${STAGE_CONCOURSE}" == "skipped") ]]; then
+  STEMCELL_VERSION_VAL=""
+fi
+
 REPO="${GITHUB_REPOSITORY:-cloudfoundry/bosh-gdc-cpi-release}"
 SERVER_URL="${GITHUB_SERVER_URL:-https://github.com}"
 RUN_ID="${GITHUB_RUN_ID:-0}"
@@ -104,7 +109,11 @@ if curl -fsSL --max-time 10 "https://cloudfoundry.github.io/bosh-gdc-cpi-release
     jq -s '
       (.[1] + .[0])
       | group_by(.id | tostring)
-      | map(sort_by([(if .status == "running" then 0 else 1 end), (.timestamp // "")]) | .[-1])
+      | map(
+          sort_by([(if .status == "running" then 0 else 1 end), (.timestamp // "")])
+          | ([.[].stemcell_version // "" | select(length > 0)] | last // "") as $sv
+          | .[-1] + (if $sv != "" and ((.[-1].stemcell_version // "") == "") then {stemcell_version: $sv} else {} end)
+        )
     ' "${RUNS_JSON}" "${RUNS_JSON}.remote" >"${RUNS_JSON}.merged" &&
       mv "${RUNS_JSON}.merged" "${RUNS_JSON}"
   fi
@@ -138,6 +147,7 @@ if curl -fsSL --max-time 10 "${GH_AUTH_HEADER[@]}" "https://api.github.com/repos
       fi
     fi
     active_ver="v0.1.1-dev.${active_sha}"
+    active_stemcell=""
     s_build="running"
     s_concourse="pending"
     s_vuln="running"
@@ -156,6 +166,10 @@ if curl -fsSL --max-time 10 "${GH_AUTH_HEADER[@]}" "https://api.github.com/repos
       fi
       if [[ "${active_ver}" =~ -dev\.([0-9a-f]{7,})$ ]]; then
         active_sha="${BASH_REMATCH[1]}"
+      fi
+      stemcell_meta="$(jq -r '.artifacts[]?.name | select(startswith("stemcell-meta-"))' "${RUNS_JSON}.art" | head -n 1 || true)"
+      if [[ "${stemcell_meta}" == stemcell-meta-* ]]; then
+        active_stemcell="${stemcell_meta#stemcell-meta-}"
       fi
       rm -f "${RUNS_JSON}.art"
     fi
@@ -191,6 +205,7 @@ if curl -fsSL --max-time 10 "${GH_AUTH_HEADER[@]}" "https://api.github.com/repos
       --arg id "${active_id}" \
       --arg timestamp "${active_started}" \
       --arg version "${active_ver}" \
+      --arg stemcell_version "${active_stemcell}" \
       --arg release_mode "${active_mode}" \
       --arg commit "${active_sha}" \
       --arg commit_url "${SERVER_URL}/${REPO}/commit/${active_sha}" \
@@ -209,6 +224,7 @@ if curl -fsSL --max-time 10 "${GH_AUTH_HEADER[@]}" "https://api.github.com/repos
         timestamp: $timestamp,
         status: "running",
         version: $version,
+        stemcell_version: $stemcell_version,
         release_mode: $release_mode,
         skip_concourse: false,
         sha256: "",
@@ -264,6 +280,7 @@ NEW_ENTRY="$(jq -n \
   --arg timestamp "${TIMESTAMP}" \
   --arg status "${OVERALL_STATUS}" \
   --arg version "${RELEASE_TAG}" \
+  --arg stemcell_version "${STEMCELL_VERSION_VAL}" \
   --arg release_mode "${RELEASE_MODE_VAL}" \
   --arg skip_concourse "${SKIP_CONCOURSE:-false}" \
   --arg sha256 "${RELEASE_SHA256:-}" \
@@ -287,6 +304,7 @@ NEW_ENTRY="$(jq -n \
     timestamp: $timestamp,
     status: $status,
     version: $version,
+    stemcell_version: $stemcell_version,
     release_mode: $release_mode,
     skip_concourse: ($skip_concourse == "true"),
     sha256: $sha256,
@@ -331,6 +349,7 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "| :--- | :--- |"
     echo "| **Release Version** | [\`${RELEASE_TAG}\`](${RELEASE_URL}) |"
     echo "| **Release Mode** | \`${RELEASE_MODE:-release}\` |"
+    echo "| **Noble Stemcell** | \`${STEMCELL_VERSION_VAL:-N/A}\` |"
     echo "| **Commit** | [\`${COMMIT_SHA}\`](${COMMIT_URL}) |"
     echo "| **Skip Concourse** | \`${SKIP_CONCOURSE:-false}\` |"
     echo "| **Duration** | \`${DURATION_STR}\` |"

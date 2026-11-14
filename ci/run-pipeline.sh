@@ -65,8 +65,8 @@ Options:
                            none | start-deployments | bosh-bootstrap | bosh-deployment | promote-candidate
                            (default: promote-candidate)
   --cpi-version <version>  Candidate CPI release version in gs://cfbosh-cicd/cpi_releases/
-  --stemcell-version <ver> Upstream GDC Ubuntu Noble stemcell version in gs://bosh-core-stemcells-candidate/gdch/
-                           (default: auto-resolved latest version)
+  --stemcell-version <ver> Published GDC Ubuntu Noble stemcell version on bosh.io (gs://bosh-core-stemcells/<ver>/)
+                           (default: auto-resolved latest published version)
   --status-file <path>     Output JSON file for Concourse execution metadata
   --max-wait-minutes <min> Maximum minutes to monitor before cleanly handing off with status=in_progress
                            (0 = unlimited; default: 0)
@@ -243,6 +243,7 @@ rotate_concourse_sa_key() {
 
 prepare_stemcell_builder_repo() {
   resolve_latest_stemcell_version
+  export STEMCELL_VERSION
   if [[ -z "${STEMCELL_BUILDER_TAG:-}" ]]; then
     STEMCELL_BUILDER_TAG="${STEMCELL_BUILDER_BRANCH}/v${STEMCELL_VERSION}"
   fi
@@ -312,8 +313,8 @@ trigger_and_monitor_pipeline() {
   fi
 
   if [[ -n "${STEMCELL_VERSION}" ]]; then
-    local stemcell_url="https://storage.googleapis.com/bosh-core-stemcells-candidate/gdch/bosh-stemcell-${STEMCELL_VERSION}-gdch-kvm-ubuntu-noble.tgz"
-    echo "[INFO] Verifying upstream GDC stemcell artifact in gs://bosh-core-stemcells-candidate/gdch/bosh-stemcell-${STEMCELL_VERSION}-gdch-kvm-ubuntu-noble.tgz..."
+    local stemcell_url="https://storage.googleapis.com/bosh-core-stemcells/${STEMCELL_VERSION}/bosh-stemcell-${STEMCELL_VERSION}-gdch-kvm-ubuntu-noble.tgz"
+    echo "[INFO] Verifying published GDC stemcell artifact in gs://bosh-core-stemcells/${STEMCELL_VERSION}/bosh-stemcell-${STEMCELL_VERSION}-gdch-kvm-ubuntu-noble.tgz..."
     curl -fsSI "${stemcell_url}" >/dev/null
   fi
 
@@ -481,6 +482,11 @@ trigger_and_monitor_pipeline() {
   latest_log="$(gcloud storage ls "gs://cfbosh-cicd/cicd-deployment-logs/log_*.md" 2>/dev/null | sort | tail -n 1 || true)"
   if [[ -n "${latest_log}" ]]; then
     echo "[INFO] Latest Concourse deployment log recorded in GCS: ${latest_log}"
+    local logged_stemcell=""
+    logged_stemcell="$(gcloud storage cat "${latest_log}" 2>/dev/null | sed -nE 's/.*bosh-stemcell-([0-9]+\.[0-9]+)-gdch-kvm-ubuntu-noble\.tgz.*/\1/p' | head -n 1 || true)"
+    if [[ -n "${logged_stemcell}" ]]; then
+      STEMCELL_VERSION="${logged_stemcell}"
+    fi
   fi
 
   echo "[INFO] Current Concourse jobs status in '${PIPELINE_NAME}':"
@@ -518,6 +524,7 @@ trigger_and_monitor_pipeline() {
       echo "concourse_status=${final_status}"
       echo "concourse_build=${build_num:-latest}"
       echo "concourse_log_uri=${latest_log}"
+      echo "stemcell_version=${STEMCELL_VERSION}"
       echo "baseline_target_id=${baseline_target_id}"
       echo "baseline_max_build_id=${baseline_max_build_id}"
       echo "retried_jobs=${trimmed_retried}"

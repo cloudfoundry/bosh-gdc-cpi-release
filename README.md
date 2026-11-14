@@ -194,6 +194,7 @@ The **`CFBOSH GDC release pipeline`** automates end-to-end BOSH CPI release pack
        | `next_version` | `bump-patch` \| `bump-minor` \| `bump-major` \| `noop` | `bump-patch` | SemVer increment strategy applied to the latest `vX.Y.Z` Git tag to compute the target release version (defaults to `0.1.0` if no final tags exist yet). |
        | `skip_concourse` | `boolean` (`true` \| `false`) | `false` | **Snapshot mode only.** Skip Stage 3 (`Concourse`) in case of underlying infrastructure issues to validate the build/publish path; the run fails fast if combined with `release_mode=release`. |
        | `concourse_wait_for` | `promote-candidate` \| `bosh-deployment` | `promote-candidate` | Target Concourse job to monitor before proceeding to Stage 4 (`promote-candidate` waits for the full Concourse pipeline). |
+       | `stemcell_version` | `string` (optional) | Latest on `bosh.io` | Official published GDC Ubuntu Noble stemcell version on [`bosh.io`](https://bosh.io/stemcells/bosh-gdch-kvm-ubuntu-noble) (e.g., `1.688`; defaults to the latest published version in `gs://bosh-core-stemcells/`). |
 - **Pipeline Stages**:
   1. **Authorize & Resolve SemVer**: Verifies maintainer authorization and derives the target SemVer version/tag (`vX.Y.Z` in `release` mode or `vX.Y.Z-dev.<sha>` in `snapshot` mode) directly from repository Git tags via `scripts/_release_tag.py` (with Stage `1b` immediately publishing a live `running` entry to the dashboard).
   2. **Build Candidate CPI & Scan Vulnerabilities**: Compiles Linux and Darwin CPI binaries (`make release-binaries`), creates the BOSH CPI release archive (`scripts/create-release`), verifies `release.MF` identity (`name: bosh-gdch-cpi` and `version`) and SHA-256 digest via `scripts/_release_artifact.py`, runs `govulncheck` against the Linux CPI binary (failing the build if any finding has a published fix — see [Vulnerability Scanning](#5-vulnerability-scanning)), and uploads candidate artifacts to `gs://cfbosh-cicd/`.
@@ -250,7 +251,7 @@ The release versioning and artifact verification architecture follows [Semantic 
 
 ### Artifacts Produced by the Release Pipeline
 
-Each run of the `CFBOSH GDC release pipeline` produces and verifies the following CPI release artifacts, and validates them in Concourse against the latest upstream GDC Ubuntu Noble stemcell (`bosh-stemcell-<version>-gdch-kvm-ubuntu-noble.tgz`, git tag `ubuntu-noble/v<version>`) published by [`cloudfoundry/bosh-linux-stemcell-builder`](https://github.com/cloudfoundry/bosh-linux-stemcell-builder) (`ubuntu-noble` branch, `gs://bosh-core-stemcells-candidate/gdch/`):
+Each run of the `CFBOSH GDC release pipeline` produces and verifies the following CPI release artifacts, and validates them in Concourse against the latest official GDC Ubuntu Noble stemcell (`bosh-stemcell-<version>-gdch-kvm-ubuntu-noble.tgz`, git tag `ubuntu-noble/v<version>`) published on [`bosh.io`](https://bosh.io/stemcells/bosh-gdch-kvm-ubuntu-noble) (`gs://bosh-core-stemcells/<version>/`) from [`cloudfoundry/bosh-linux-stemcell-builder`](https://github.com/cloudfoundry/bosh-linux-stemcell-builder) (`ubuntu-noble` branch):
 
 | Artifact | Location / Destination | Description |
 | :--- | :--- | :--- |
