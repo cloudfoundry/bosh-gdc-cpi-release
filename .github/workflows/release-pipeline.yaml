@@ -320,6 +320,9 @@ jobs:
       concourse_status: ${{ steps.run_concourse.outputs.concourse_status }}
       concourse_build: ${{ steps.run_concourse.outputs.concourse_build }}
       concourse_log_uri: ${{ steps.run_concourse.outputs.concourse_log_uri }}
+      baseline_target_id: ${{ steps.run_concourse.outputs.baseline_target_id }}
+      baseline_max_build_id: ${{ steps.run_concourse.outputs.baseline_max_build_id }}
+      retried_jobs: ${{ steps.run_concourse.outputs.retried_jobs }}
     steps:
       - name: Checkout Target Revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -327,6 +330,10 @@ jobs:
           ref: ${{ needs.prepare.outputs.target_ref }}
           fetch-depth: 0
 
+      # GitHub-hosted runners cap any single job at 360 minutes. A cold stemcell cache
+      # or full CF + BATs + CATs run can take 6.5–7.5 hours, so exit cleanly at 330m
+      # with concourse_status=in_progress and let concourse_continue finish monitoring
+      # on a fresh 6-hour runner.
       - name: Deploy & Execute Concourse Pipeline on GKE
         id: run_concourse
         env:
@@ -344,6 +351,7 @@ jobs:
             --fly-target cfbosh-concourse-gke \
             --cpi-version "${{ needs.prepare.outputs.version }}" \
             --wait-job "${{ needs.prepare.outputs.concourse_wait_for }}" \
+            --max-wait-minutes 330 \
             --status-file "/tmp/concourse-status.json"
 
       - name: Upload Concourse Execution Metadata
@@ -355,15 +363,69 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  concourse_continue:
+    name: 3b. Continue Concourse Deployment Pipeline (GKE)
+    needs: [prepare, build_candidate, concourse]
+    if: >-
+      needs.concourse.result == 'success' &&
+      needs.concourse.outputs.concourse_status == 'in_progress'
+    runs-on: ubuntu-latest
+    environment: cfbosh-staging
+    timeout-minutes: 360
+    outputs:
+      concourse_status: ${{ steps.resume_concourse.outputs.concourse_status }}
+      concourse_build: ${{ steps.resume_concourse.outputs.concourse_build }}
+      concourse_log_uri: ${{ steps.resume_concourse.outputs.concourse_log_uri }}
+    steps:
+      - name: Checkout Target Revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.target_ref }}
+          fetch-depth: 0
+
+      - name: Resume Monitoring Active Concourse Pipeline on GKE
+        id: resume_concourse
+        env:
+          CFBOSH_CICD_SERVICE_ACCOUNT_KEY: ${{ secrets.CFBOSH_CICD_SERVICE_ACCOUNT_KEY || secrets.GCP_SA_KEY }}
+          GDC_ORG: ${{ secrets.GDC_ORG }}
+          GDC_CONSOLE_URL: ${{ secrets.GDC_CONSOLE_URL }}
+        run: |
+          set -euo pipefail
+          source ./scripts/ci-common.sh
+          setup_gcp_sa_key "/tmp/cfbosh-cicd-sa.json" "${CFBOSH_CICD_SERVICE_ACCOUNT_KEY}"
+          ./ci/run-pipeline.sh \
+            --type prod \
+            --fly-target cfbosh-concourse-gke \
+            --attach-only \
+            --cpi-version "${{ needs.prepare.outputs.version }}" \
+            --wait-job "${{ needs.prepare.outputs.concourse_wait_for }}" \
+            --baseline-target-id "${{ needs.concourse.outputs.baseline_target_id || '0' }}" \
+            --baseline-max-build-id "${{ needs.concourse.outputs.baseline_max_build_id || '0' }}" \
+            --retried-jobs "${{ needs.concourse.outputs.retried_jobs }}" \
+            --status-file "/tmp/concourse-status.json"
+
+      - name: Upload Concourse Continuation Metadata
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: concourse-status-cont-${{ needs.prepare.outputs.version }}
+          path: /tmp/concourse-status.json
+          if-no-files-found: ignore
+          retention-days: 14
+
   release:
     name: 4. Release CPI Artifact (GitHub Releases & bosh.io)
-    needs: [prepare, build_candidate, concourse]
+    needs: [prepare, build_candidate, concourse, concourse_continue]
     if: >-
       always() &&
       needs.prepare.outputs.should_run == 'true' &&
       (needs.prepare.outputs.release_mode != 'release' || needs.prepare.outputs.has_new_commits == 'true') &&
       needs.build_candidate.result == 'success' &&
-      (needs.concourse.result == 'success' || (needs.concourse.result == 'skipped' && needs.prepare.outputs.skip_concourse == 'true' && needs.prepare.outputs.release_mode != 'release'))
+      (
+        (needs.concourse.result == 'success' && needs.concourse.outputs.concourse_status == 'success' && needs.concourse_continue.result == 'skipped') ||
+        (needs.concourse.result == 'success' && needs.concourse_continue.result == 'success' && needs.concourse_continue.outputs.concourse_status == 'success') ||
+        (needs.concourse.result == 'skipped' && needs.prepare.outputs.skip_concourse == 'true' && needs.prepare.outputs.release_mode != 'release')
+      )
     runs-on: ubuntu-latest
     environment: cfbosh-staging
     timeout-minutes: 30
@@ -416,7 +478,7 @@ jobs:
 
   update_dashboard:
     name: 5. Update Release Pipeline Dashboard
-    needs: [prepare, build_candidate, concourse, release]
+    needs: [prepare, build_candidate, concourse, concourse_continue, release]
     if: >-
       always() &&
       needs.prepare.outputs.should_run == 'true' &&
@@ -445,9 +507,9 @@ jobs:
           RELEASE_MODE: ${{ needs.prepare.outputs.release_mode }}
           SKIP_CONCOURSE: ${{ needs.prepare.outputs.skip_concourse }}
           RELEASE_SHA256: ${{ needs.build_candidate.outputs.sha256 }}
-          CONCOURSE_LOG_URI: ${{ needs.concourse.outputs.concourse_log_uri }}
+          CONCOURSE_LOG_URI: ${{ needs.concourse_continue.outputs.concourse_log_uri || needs.concourse.outputs.concourse_log_uri }}
           BUILD_CANDIDATE_RESULT: ${{ needs.build_candidate.result }}
-          CONCOURSE_RESULT: ${{ needs.concourse.result }}
+          CONCOURSE_RESULT: ${{ needs.concourse.result == 'skipped' && 'skipped' || (((needs.concourse.result == 'success' && needs.concourse.outputs.concourse_status == 'success' && needs.concourse_continue.result == 'skipped') || (needs.concourse.result == 'success' && needs.concourse_continue.result == 'success' && needs.concourse_continue.outputs.concourse_status == 'success')) && 'success' || 'failure') }}
           RELEASE_RESULT: ${{ needs.release.result }}
           HAS_NEW_COMMITS: ${{ needs.prepare.outputs.has_new_commits }}
           LATEST_TAG: ${{ needs.prepare.outputs.latest_tag }}
