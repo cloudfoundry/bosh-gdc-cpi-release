@@ -47,6 +47,10 @@ on:
         options:
           - promote-candidate
           - bosh-deployment
+      stemcell_version:
+        description: 'Published GDC Ubuntu Noble stemcell version on bosh.io (e.g. 1.688; defaults to latest published on bosh.io)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -83,6 +87,7 @@ jobs:
       target_ref: ${{ steps.init.outputs.target_ref }}
       target_branch: ${{ steps.init.outputs.target_branch }}
       start_epoch: ${{ steps.init.outputs.start_epoch }}
+      stemcell_version: ${{ steps.stemcell.outputs.stemcell_version }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -195,12 +200,36 @@ jobs:
           ./scripts/release-cpi.sh "${ARGS[@]}"
           printf '%s\n' "${{ steps.semver.outputs.release_mode }}:${{ steps.semver.outputs.version }}" > /tmp/pipeline-meta.txt
 
+      - name: Resolve Published GDC Ubuntu Noble Stemcell Version
+        if: steps.init.outputs.should_run == 'true' && steps.init.outputs.skip_concourse != 'true'
+        id: stemcell
+        env:
+          STEMCELL_VERSION: ${{ github.event.inputs.stemcell_version }}
+        run: |
+          set -euo pipefail
+          source ./ci/stemcell.sh
+          resolve_latest_stemcell_version
+          STEMCELL_URL="https://storage.googleapis.com/bosh-core-stemcells/${STEMCELL_VERSION}/bosh-stemcell-${STEMCELL_VERSION}-gdch-kvm-ubuntu-noble.tgz"
+          echo "[INFO] Verifying published GDC stemcell ${STEMCELL_VERSION} at ${STEMCELL_URL}..."
+          curl -fsSI "${STEMCELL_URL}" >/dev/null
+          echo "stemcell_version=${STEMCELL_VERSION}" >> "${GITHUB_OUTPUT}"
+          printf '%s\n' "${STEMCELL_VERSION}" > /tmp/stemcell-meta.txt
+
       - name: Upload Pipeline Run Metadata Artifact
         if: steps.init.outputs.should_run == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pipeline-meta-${{ steps.semver.outputs.release_mode }}-${{ steps.semver.outputs.version }}
           path: /tmp/pipeline-meta.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Stemcell Metadata Artifact
+        if: steps.init.outputs.should_run == 'true' && steps.init.outputs.skip_concourse != 'true' && steps.stemcell.outputs.stemcell_version != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stemcell-meta-${{ steps.stemcell.outputs.stemcell_version }}
+          path: /tmp/stemcell-meta.txt
           if-no-files-found: ignore
           retention-days: 14
 
@@ -233,6 +262,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           RELEASE_MODE: ${{ needs.prepare.outputs.release_mode }}
           SKIP_CONCOURSE: ${{ needs.prepare.outputs.skip_concourse }}
+          STEMCELL_VERSION: ${{ needs.prepare.outputs.stemcell_version }}
           HAS_NEW_COMMITS: ${{ needs.prepare.outputs.has_new_commits }}
           LATEST_TAG: ${{ needs.prepare.outputs.latest_tag }}
           PUSH_DASHBOARD_DATA: "false"
@@ -320,6 +350,7 @@ jobs:
       concourse_status: ${{ steps.run_concourse.outputs.concourse_status }}
       concourse_build: ${{ steps.run_concourse.outputs.concourse_build }}
       concourse_log_uri: ${{ steps.run_concourse.outputs.concourse_log_uri }}
+      stemcell_version: ${{ steps.run_concourse.outputs.stemcell_version }}
       baseline_target_id: ${{ steps.run_concourse.outputs.baseline_target_id }}
       baseline_max_build_id: ${{ steps.run_concourse.outputs.baseline_max_build_id }}
       retried_jobs: ${{ steps.run_concourse.outputs.retried_jobs }}
@@ -350,6 +381,7 @@ jobs:
             --type prod \
             --fly-target cfbosh-concourse-gke \
             --cpi-version "${{ needs.prepare.outputs.version }}" \
+            --stemcell-version "${{ needs.prepare.outputs.stemcell_version }}" \
             --wait-job "${{ needs.prepare.outputs.concourse_wait_for }}" \
             --max-wait-minutes 330 \
             --status-file "/tmp/concourse-status.json"
@@ -376,6 +408,7 @@ jobs:
       concourse_status: ${{ steps.resume_concourse.outputs.concourse_status }}
       concourse_build: ${{ steps.resume_concourse.outputs.concourse_build }}
       concourse_log_uri: ${{ steps.resume_concourse.outputs.concourse_log_uri }}
+      stemcell_version: ${{ steps.resume_concourse.outputs.stemcell_version }}
     steps:
       - name: Checkout Target Revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -398,6 +431,7 @@ jobs:
             --fly-target cfbosh-concourse-gke \
             --attach-only \
             --cpi-version "${{ needs.prepare.outputs.version }}" \
+            --stemcell-version "${{ needs.concourse.outputs.stemcell_version || needs.prepare.outputs.stemcell_version }}" \
             --wait-job "${{ needs.prepare.outputs.concourse_wait_for }}" \
             --baseline-target-id "${{ needs.concourse.outputs.baseline_target_id || '0' }}" \
             --baseline-max-build-id "${{ needs.concourse.outputs.baseline_max_build_id || '0' }}" \
@@ -506,6 +540,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           RELEASE_MODE: ${{ needs.prepare.outputs.release_mode }}
           SKIP_CONCOURSE: ${{ needs.prepare.outputs.skip_concourse }}
+          STEMCELL_VERSION: ${{ needs.concourse_continue.outputs.stemcell_version || needs.concourse.outputs.stemcell_version || needs.prepare.outputs.stemcell_version }}
           RELEASE_SHA256: ${{ needs.build_candidate.outputs.sha256 }}
           CONCOURSE_LOG_URI: ${{ needs.concourse_continue.outputs.concourse_log_uri || needs.concourse.outputs.concourse_log_uri }}
           BUILD_CANDIDATE_RESULT: ${{ needs.build_candidate.result }}

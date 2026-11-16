@@ -168,6 +168,7 @@
             <div class="flex items-center space-x-2">
               <h2 class="text-base font-semibold text-white" id="latest-title">Latest Pipeline Execution</h2>
               <span id="latest-version-pill" class="font-mono text-xs px-2 py-0.5 rounded bg-slate-800 text-sky-400 border border-slate-700"></span>
+              <a id="latest-stemcell-pill" href="https://bosh.io/stemcells/bosh-gdch-kvm-ubuntu-noble" target="_blank" rel="noopener noreferrer" class="hidden font-mono text-xs px-2 py-0.5 rounded bg-teal-500/10 text-teal-400 border border-teal-500/20 hover:bg-teal-500/20 transition" title="Noble stemcell builder version"></a>
               <span id="latest-skip-concourse-pill" class="hidden font-mono text-xs px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">skip_concourse=true</span>
             </div>
             <p class="text-xs text-slate-400 mt-0.5" id="latest-meta"></p>
@@ -203,7 +204,7 @@
       </div>
 
       <div class="relative w-full sm:w-64">
-        <input type="text" id="search-input" oninput="renderRuns()" placeholder="Search version, commit, run #..."
+        <input type="text" id="search-input" oninput="renderRuns()" placeholder="Search version, stemcell, commit, run #..."
                class="w-full bg-slate-900/90 border border-slate-700/80 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500">
         <svg class="w-4 h-4 text-slate-500 absolute left-3 top-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
@@ -231,6 +232,7 @@
               <th class="py-3.5 px-4">Mode</th>
               <th class="py-3.5 px-4">Status</th>
               <th class="py-3.5 px-4">SemVer Version</th>
+              <th class="py-3.5 px-4" title="cloudfoundry/bosh-linux-stemcell-builder (ubuntu-noble) version">Noble Stemcell</th>
               <th class="py-3.5 px-4">Commit</th>
               <th class="py-3.5 px-4">Stage Breakdown (Build / Concourse / Scan / Publish)</th>
               <th class="py-3.5 px-4">Duration</th>
@@ -241,7 +243,7 @@
           </thead>
           <tbody id="runs-tbody" class="divide-y divide-slate-800/60 text-xs">
             <tr>
-              <td colspan="10" class="py-12 text-center text-slate-500">Loading pipeline run history...</td>
+              <td colspan="11" class="py-12 text-center text-slate-500">Loading pipeline run history...</td>
             </tr>
           </tbody>
         </table>
@@ -354,6 +356,21 @@
       return `${m}m ${s}s`;
     }
 
+    function getStemcellUrl(ver) {
+      const v = String(ver || '').trim().replace(/^v/, '');
+      if (!v) return 'https://bosh.io/stemcells/bosh-gdch-kvm-ubuntu-noble';
+      if (/^[0-9]+\.[0-9]+$/.test(v) && v !== '1.699') {
+        return `https://github.com/cloudfoundry/bosh-linux-stemcell-builder/releases/tag/ubuntu-noble/v${v}`;
+      }
+      return 'https://github.com/cloudfoundry/bosh-linux-stemcell-builder/tree/ubuntu-noble';
+    }
+
+    function renderStemcellCell(ver) {
+      const v = String(ver || '').trim();
+      if (!v) return '<span class="text-slate-500">--</span>';
+      return `<a href="${getStemcellUrl(v)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-teal-400 hover:text-teal-300 underline decoration-teal-500/40" title="cloudfoundry/bosh-linux-stemcell-builder (ubuntu-noble)">${v}</a>`;
+    }
+
     function updateKPIs(runs) {
       const total = runs.length;
       document.getElementById('kpi-total').textContent = total;
@@ -402,6 +419,14 @@
 
       document.getElementById('latest-title').textContent = `Latest Run ${latest.run_number || ''}`;
       document.getElementById('latest-version-pill').textContent = latest.version || 'v0.1.0';
+      const stemcellPill = document.getElementById('latest-stemcell-pill');
+      if (latest.stemcell_version) {
+        stemcellPill.textContent = `noble ${latest.stemcell_version}`;
+        stemcellPill.href = getStemcellUrl(latest.stemcell_version);
+        stemcellPill.classList.remove('hidden');
+      } else {
+        stemcellPill.classList.add('hidden');
+      }
       const skipPill = document.getElementById('latest-skip-concourse-pill');
       if (latest.skip_concourse) {
         skipPill.classList.remove('hidden');
@@ -459,6 +484,7 @@
         if (!query) return true;
         return (
           (r.version || '').toLowerCase().includes(query) ||
+          (r.stemcell_version || '').toLowerCase().includes(query) ||
           (r.commit || '').toLowerCase().includes(query) ||
           (r.run_number || '').toLowerCase().includes(query) ||
           (r.trigger || '').toLowerCase().includes(query) ||
@@ -470,7 +496,7 @@
       const tbody = document.getElementById('runs-tbody');
 
       if (filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="10" class="py-10 text-center text-slate-500">No matching pipeline runs found.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" class="py-10 text-center text-slate-500">No matching pipeline runs found.</td></tr>`;
         return;
       }
 
@@ -506,6 +532,7 @@
               ${run.version || '--'}
               ${run.skip_concourse ? '<span class="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">skip-concourse</span>' : ''}
             </td>
+            <td class="py-3.5 px-4 font-mono">${renderStemcellCell(run.stemcell_version)}</td>
             <td class="py-3.5 px-4 font-mono">
               <a href="${run.commit_url || '#'}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-slate-300 hover:text-sky-400 underline decoration-slate-700">${run.commit || '--'}</a>
             </td>
@@ -521,7 +548,7 @@
             </td>
           </tr>
           <tr id="${detailsId}" class="hidden bg-slate-900/70">
-            <td colspan="10" class="p-4">
+            <td colspan="11" class="p-4">
               <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 mb-3">
                 ${Object.entries(STAGE_LABELS).map(([k, label]) => {
                   const stStage = getStatusStyle(stages[k] || 'skipped');
@@ -533,7 +560,8 @@
                   `;
                 }).join('')}
               </div>
-              <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px] font-mono text-slate-400 bg-slate-950/60 p-3 rounded border border-slate-800">
+              <div class="grid grid-cols-1 md:grid-cols-4 gap-2 text-[11px] font-mono text-slate-400 bg-slate-950/60 p-3 rounded border border-slate-800">
+                <div><span class="text-slate-500">Noble Stemcell:</span> ${run.stemcell_version ? `<a href="https://bosh.io/stemcells/bosh-gdch-kvm-ubuntu-noble" target="_blank" rel="noopener noreferrer" class="text-teal-400 hover:text-teal-300 underline">${run.stemcell_version}</a>` : 'N/A (Concourse skipped)'}</div>
                 <div><span class="text-slate-500">SHA-256:</span> ${run.sha256 ? run.sha256.substring(0, 24) + '...' : 'verified'}</div>
                 <div><span class="text-slate-500">Candidate GCS:</span> ${run.beta_gcs_uri || 'gs://cfbosh-cicd/cpi_releases/'}</div>
                 <div><span class="text-slate-500">External Release:</span> ${mode === 'release' ? (run.release_url || 'GitHub Releases & bosh.io') : 'Skipped (snapshot mode)'}</div>
@@ -638,6 +666,7 @@
         const shortSha = (ghRun.head_sha || '').substring(0, 7);
 
         let inferredVersion = staticEntry?.version || '';
+        let inferredStemcell = staticEntry?.stemcell_version || '';
         let inferredMode = staticEntry?.release_mode || '';
         let liveStages = null;
 
@@ -656,6 +685,10 @@
               inferredVersion = `v${rest.replace('snapshot-', '').replace(/^v/, '')}`;
             }
           }
+          const stemcellArt = artifacts.find(a => (a.name || '').startsWith('stemcell-meta-'));
+          if (stemcellArt) {
+            inferredStemcell = stemcellArt.name.replace('stemcell-meta-', '');
+          }
           const cpiArt = artifacts.find(a => (a.name || '').startsWith('cpi-release-artifacts-'));
           if (cpiArt) {
             const artVer = cpiArt.name.replace('cpi-release-artifacts-', '');
@@ -664,12 +697,22 @@
           }
           if (jobs.length > 0) {
             const buildJob = jobs.find(j => (j.name || '').includes('Build Candidate CPI'));
-            const concourseJob = jobs.find(j => (j.name || '').includes('Run Concourse Deployment'));
+            const concourseJobs = jobs.filter(j => (j.name || '').includes('Concourse Deployment'));
             const releaseJob = jobs.find(j => (j.name || '').includes('Release CPI Artifact'));
             const buildState = mapJobState(buildJob);
+            let concourseState = 'pending';
+            if (concourseJobs.some(j => j.status !== 'completed')) {
+              concourseState = 'running';
+            } else if (concourseJobs.some(j => j.conclusion && j.conclusion !== 'success' && j.conclusion !== 'skipped')) {
+              concourseState = 'failed';
+            } else if (concourseJobs.some(j => j.conclusion === 'success')) {
+              concourseState = 'passed';
+            } else if (concourseJobs.length > 0 && concourseJobs.every(j => j.conclusion === 'skipped')) {
+              concourseState = 'skipped';
+            }
             liveStages = {
               build_candidate: buildState,
-              concourse: mapJobState(concourseJob),
+              concourse: concourseState,
               vuln_scan: buildState,
               release: mapJobState(releaseJob)
             };
@@ -690,6 +733,7 @@
             release_mode: mode,
             skip_concourse: staticEntry?.skip_concourse || false,
             version,
+            stemcell_version: inferredStemcell,
             commit: staticEntry?.commit || shortSha,
             commit_url: staticEntry?.commit_url || `https://github.com/${GITHUB_REPO}/commit/${ghRun.head_sha}`,
             duration: isRunning ? `${formatDurationSec(elapsedSec)} (live)` : (staticEntry?.duration || formatDurationSec(elapsedSec)),

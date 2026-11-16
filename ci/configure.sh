@@ -159,6 +159,7 @@ main() {
   bosh int "${CONFIGS_TEMPLATE}" \
     --var org="${GDC_ORG}" \
     --var console_url="${GDC_CONSOLE_URL}" \
+    --var stemcell_version="${STEMCELL_VERSION:-}" \
     --var-file cicd_sa_key_json=cfbosh-cicd-sa-key.json \
     --var-file stemcell_script="${CI_DIR}/stemcell.sh" >configs.yml
 

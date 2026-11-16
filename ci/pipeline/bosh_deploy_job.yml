@@ -42,6 +42,7 @@
         params:
           GCS_SERVICE_ACCOUNT_KEY: ((credentials.cfbosh-cicd-sa_key))
           STEMCELL_SCRIPT: ((stemcell.script))
+          STEMCELL_VERSION: ((stemcell.version))
         run:
           path: bash
           args:
