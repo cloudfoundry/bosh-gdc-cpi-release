@@ -47,10 +47,11 @@ is_authorized_maintainer() {
 
 # is_trusted_bot_pr_author reports whether a pull_request author is a GitHub
 # bot explicitly trusted to auto-trigger the presubmit integration test.
-# Defaults to dependabot[bot]; override with a comma/space separated
-# CI_TRUSTED_BOT_AUTHORS. Only consulted for same-repository pull_request
-# events (never for /test-integration comments or release triggers), and
-# bots still cannot approve or merge, so a maintainer review remains required.
+# Defaults to dependabot[bot] and github-actions[bot]; override with a
+# comma/space separated CI_TRUSTED_BOT_AUTHORS. Only consulted for
+# same-repository pull_request events (never for /test-integration comments or
+# release triggers), and bots still cannot approve or merge, so a maintainer
+# review remains required.
 is_trusted_bot_pr_author() {
   local actor="$1"
   if [[ -z "${actor}" ]]; then
@@ -58,7 +59,7 @@ is_trusted_bot_pr_author() {
   fi
   local actor_lc trusted bot
   actor_lc=$(printf '%s' "${actor}" | tr '[:upper:]' '[:lower:]')
-  trusted="${CI_TRUSTED_BOT_AUTHORS:-dependabot[bot]}"
+  trusted="${CI_TRUSTED_BOT_AUTHORS:-dependabot[bot] github-actions[bot]}"
   for bot in ${trusted//,/ }; do
     if [[ "${actor_lc}" == "$(printf '%s' "${bot}" | tr '[:upper:]' '[:lower:]')" ]]; then
       return 0
@@ -144,6 +145,41 @@ verify_pr_head_at_comment_time() {
   fi
 
   echo "Verified PR #${PR_NUMBER} head commit ${PR_HEAD_SHA:0:7} predates '/test-integration' comment (${comment_created_at})."
+}
+
+# has_only_non_code_file_changes returns 0 (true) strictly when git diff against
+# origin/main succeeds, is non-empty, and modifies ONLY non-code paths (never
+# consulting commit-message skip directives).
+has_only_non_code_file_changes() {
+  local target_sha="${1:-HEAD}"
+  local non_code_regex='^(\.gitignore|\.golangci\.yaml|OWNERS.*|CODEOWNERS|VERSION|LICENSE.*|NOTICE.*|Makefile|.*\.md|docs/.*|\.github/.*|dashboard/.*|scripts/ci-common\.sh|scripts/create-release|scripts/release-cpi\.sh|scripts/update-dashboard\.sh|releases/.*|\.final_builds/.*|scripts/_release_.*\.py|scripts/_final_release.*\.py|scripts/_vuln_report.*\.py|ci/.*)$'
+  local changed_files
+  if ! changed_files="$(git diff --name-only "origin/main...${target_sha}" 2>/dev/null)" || [[ -z "${changed_files}" ]]; then
+    return 1
+  fi
+  if ! printf '%s\n' "${changed_files}" | grep -qvE "${non_code_regex}"; then
+    echo "All files changed relative to origin/main (${changed_files//$'\n'/, }) are non-code files. Skipping integration test."
+    return 0
+  fi
+  return 1
+}
+
+# has_only_release_metadata_changes returns 0 (true) strictly when git diff
+# against origin/main succeeds, is non-empty, and modifies ONLY release metadata
+# paths (.final_builds/, releases/, dashboard/data/runs.json) without consulting
+# commit-message skip directives.
+has_only_release_metadata_changes() {
+  local target_sha="${1:-HEAD}"
+  local metadata_regex='^(\.final_builds/.*|releases/.*|dashboard/data/runs\.json)$'
+  local changed_files
+  if ! changed_files="$(git diff --name-only "origin/main...${target_sha}" 2>/dev/null)" || [[ -z "${changed_files}" ]]; then
+    return 1
+  fi
+  if ! printf '%s\n' "${changed_files}" | grep -qvE "${metadata_regex}"; then
+    echo "All files changed relative to origin/main (${changed_files//$'\n'/, }) are release metadata files. Skipping integration test."
+    return 0
+  fi
+  return 1
 }
 
 # should_skip_non_code_changes returns 0 (true) on pull_request events when:
@@ -427,7 +463,23 @@ check_ci_preconditions() {
     fi
 
     if is_trusted_bot_pr_author "${pr_user}"; then
-      echo "Pull request author '${pr_user}' is a trusted bot; running the integration test automatically."
+      echo "Pull request author '${pr_user}' is a trusted bot; verifying presubmit preconditions."
+      if [[ "$(printf '%s' "${pr_user}" | tr '[:upper:]' '[:lower:]')" == "github-actions[bot]" ]]; then
+        if [[ "${CI_WORKFLOW_TYPE:-integration}" != "concourse" ]] && has_only_release_metadata_changes "${pr_head_sha}"; then
+          if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+            echo "should_run=false" >>"${GITHUB_OUTPUT}"
+          fi
+          exit 0
+        fi
+        echo "::error::Refusing automatic integration test for ${pr_user} PR outside release metadata paths (.final_builds/, releases/, dashboard/data/runs.json); an authorized maintainer must trigger /test-integration."
+        exit 1
+      fi
+      if [[ "${CI_WORKFLOW_TYPE:-integration}" != "concourse" ]] && has_only_non_code_file_changes "${pr_head_sha}"; then
+        if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+          echo "should_run=false" >>"${GITHUB_OUTPUT}"
+        fi
+        exit 0
+      fi
       # The secret value itself is only injected into the test step; the
       # preconditions step receives HAS_GDC_CPI_CONFIG (true/false) instead.
       if [[ "${HAS_GDC_CPI_CONFIG:-}" == "false" || (-z "${HAS_GDC_CPI_CONFIG:-}" && -z "${GDC_CPI_CONFIG:-}") ]]; then
@@ -446,6 +498,17 @@ check_ci_preconditions() {
       fi
       exit 0
     fi
+  fi
+
+  if [[ "${GITHUB_EVENT_NAME:-}" == "push" && "${GITHUB_REF_NAME:-}" == chore/release-metadata-* ]]; then
+    if [[ "${CI_WORKFLOW_TYPE:-integration}" != "concourse" ]] && has_only_release_metadata_changes "HEAD"; then
+      if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+        echo "should_run=false" >>"${GITHUB_OUTPUT}"
+      fi
+      exit 0
+    fi
+    echo "::error::Refusing automatic integration test on '${GITHUB_REF_NAME}' push outside release metadata paths (.final_builds/, releases/, dashboard/data/runs.json); trigger via pull_request or workflow_dispatch."
+    exit 1
   fi
 
   if [[ "${GITHUB_EVENT_NAME:-}" == "issue_comment" && -f "${GITHUB_EVENT_PATH:-}" ]]; then
@@ -835,4 +898,44 @@ push_metadata_to_branch() {
     return 0
   fi
   return 1
+}
+
+# push_branch_with_deploy_key force-pushes HEAD to the given ref (e.g.
+# refs/heads/chore/release-metadata-vX.Y.Z) over SSH using
+# RELEASE_METADATA_DEPLOY_KEY when available. When allow_origin_fallback is
+# "true" (default), a failed SSH deploy-key push logs a warning and falls back
+# to pushing via origin (GITHUB_TOKEN) so finalized release metadata is still
+# preserved on GitHub. Pass allow_origin_fallback="false" for follow-up
+# synchronize pushes where a GITHUB_TOKEN push would not trigger workflows.
+push_branch_with_deploy_key() {
+  local target_ref="$1"
+  local allow_origin_fallback="${2:-true}"
+  local repo_slug="${GITHUB_REPOSITORY:-cloudfoundry/bosh-gdc-cpi-release}"
+
+  if [[ -n "${RELEASE_METADATA_DEPLOY_KEY:-}" ]]; then
+    local key_file xtrace_was_set=false rc=0
+    if [[ "$-" == *x* ]]; then
+      xtrace_was_set=true
+      set +x
+    fi
+    key_file="$(mktemp /tmp/release-metadata-key-XXXXXX)"
+    chmod 0600 "${key_file}"
+    printf '%s\n' "${RELEASE_METADATA_DEPLOY_KEY}" >"${key_file}"
+    if [[ "${xtrace_was_set}" == "true" ]]; then
+      set -x
+    fi
+    GIT_SSH_COMMAND="ssh -i ${key_file} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+      git push --force "git@github.com:${repo_slug}.git" "HEAD:${target_ref}" || rc=$?
+    rm -f "${key_file}"
+    if [[ "${rc}" -eq 0 ]]; then
+      return 0
+    fi
+    echo "[WARN] Deploy-key SSH push to ${target_ref} failed (exit ${rc})." >&2
+    if [[ "${allow_origin_fallback}" != "true" ]]; then
+      return "${rc}"
+    fi
+    echo "[WARN] Falling back to origin push for ${target_ref} so release metadata is preserved..." >&2
+  fi
+
+  git push --force origin "HEAD:${target_ref}"
 }

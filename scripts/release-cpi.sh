@@ -413,12 +413,29 @@ commit_final_release_metadata() {
 
   local pr_branch="chore/release-metadata-${tag}"
   echo "[WARN] Direct push to ${branch} failed; falling back to ${pr_branch}..."
-  if git push --force origin "HEAD:refs/heads/${pr_branch}"; then
+  if push_branch_with_deploy_key "refs/heads/${pr_branch}" "true"; then
     local repo_slug="${GITHUB_REPOSITORY:-cloudfoundry/bosh-gdc-cpi-release}"
-    if ! gh pr view "${pr_branch}" --repo "${repo_slug}" >/dev/null 2>&1; then
-      gh pr create --repo "${repo_slug}" --base "${branch}" --head "${pr_branch}" \
+    local open_pr_num pr_created="false"
+    open_pr_num="$(gh pr list --repo "${repo_slug}" --head "${pr_branch}" --base "${branch}" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+    if [[ -z "${open_pr_num}" ]]; then
+      if gh pr create --repo "${repo_slug}" --base "${branch}" --head "${pr_branch}" \
         --title "chore(release): cut ${tag} [skip-integ]" \
-        --body "Automated bosh.io final-release metadata (\`releases/\`, \`.final_builds/\`) for \`${tag}\`." || true
+        --body "Automated bosh.io final-release metadata (\`releases/\`, \`.final_builds/\`) for \`${tag}\`."; then
+        pr_created="true"
+      else
+        echo "[WARN] Failed to create PR for ${pr_branch}; open a PR manually." >&2
+      fi
+    fi
+    # Pull requests opened with GITHUB_TOKEN suppress pull_request workflows on the
+    # 'opened' event. Push a follow-up synchronize update over SSH using
+    # RELEASE_METADATA_DEPLOY_KEY after PR creation so GitHub Actions triggers all
+    # required status checks automatically on the final PR commit.
+    if [[ "${pr_created}" == "true" && -n "${RELEASE_METADATA_DEPLOY_KEY:-}" ]]; then
+      sleep 2
+      GIT_COMMITTER_DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" git commit --amend --no-edit -q
+      if ! push_branch_with_deploy_key "refs/heads/${pr_branch}" "false"; then
+        echo "[WARN] Follow-up synchronize push to ${pr_branch} failed; trigger status checks manually." >&2
+      fi
     fi
     return 0
   fi
