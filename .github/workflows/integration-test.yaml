@@ -13,6 +13,9 @@ on:
     # check on main, so the workflow must always report on every PR. Non-code changes
     # are detected by should_skip_non_code_changes in scripts/ci-common.sh, which
     # short-circuits the run with a passing check instead of leaving it missing.
+  push:
+    branches:
+      - 'chore/release-metadata-*'
   issue_comment:
     types: [created]
   workflow_dispatch:
