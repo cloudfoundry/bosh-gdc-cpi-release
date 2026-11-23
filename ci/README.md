@@ -47,7 +47,7 @@ The `pre-release-fan-in` job is the release gate. It has no tasks: it triggers o
 
 ### 6. job: promote-candidate
 
-The `promote-candidate` job, depending on the success of the `pre-release-fan-in` job, concludes a qualified run: it runs only for a build where the same run passed both `run-bats` and `run-cats`. At the end of the job execution associated with a build ID, the deployment log is updated with the release context, and the deployment artifacts including the context of all jobs are uploaded to the GCS bucket folder `gs://cfbosh-cicd/cicd-deployment-logs/artifacts`. In the automated **`CFBOSH GDC release pipeline`** (`.github/workflows/release-pipeline.yaml`), `ci/run-pipeline.sh` waits for `promote-candidate` (`--wait-job promote-candidate`) as the terminal Concourse qualification gate before Stage 4 (`scripts/release-cpi.sh --stage publish`) publishes the qualified CPI release artifacts to GitHub Releases and `bosh.io` (`release` mode) or records the validated snapshot (`snapshot` mode).
+The `promote-candidate` job, depending on the success of the `pre-release-fan-in` job, concludes a qualified run: it runs only for a build where the same run passed both `run-bats` and `run-cats`. At the end of the job execution associated with a build ID, the deployment log is updated with the release context, and the deployment artifacts including the context of all jobs are uploaded to the GCS bucket folder `gs://cfbosh-cicd/cicd-deployment-logs/artifacts`. In the automated **`CFBOSH GDC CPI Release pipeline`** (`.github/workflows/release-pipeline.yaml`), `ci/run-pipeline.sh` waits for `promote-candidate` (`--wait-job promote-candidate`) as the terminal Concourse qualification gate before Stage 4 (`scripts/release-cpi.sh --stage publish`) publishes the qualified CPI release artifacts to GitHub Releases and `bosh.io` (`release` mode) or records the validated snapshot (`snapshot` mode).
 
 ### 7. job: report-orphaned-vms
 
@@ -79,7 +79,7 @@ Jobs are grouped into UI tabs: `all`, `deploy` (`start-deployments`, `bosh-boots
 
 ## Automated Execution (`ci/run-pipeline.sh` & GitHub Actions)
 
-In CI/CD (Stage 3 of [`.github/workflows/release-pipeline.yaml`](../.github/workflows/release-pipeline.yaml), **`CFBOSH GDC release pipeline`**), Concourse pipeline configuration, triggering, and monitoring are fully automated via [`ci/run-pipeline.sh`](./run-pipeline.sh):
+In CI/CD (Stage 3 of [`.github/workflows/release-pipeline.yaml`](../.github/workflows/release-pipeline.yaml), **`CFBOSH GDC CPI Release pipeline`**), Concourse pipeline configuration, triggering, and monitoring are fully automated via [`ci/run-pipeline.sh`](./run-pipeline.sh):
 
 ```bash
 ./ci/run-pipeline.sh \
@@ -152,7 +152,7 @@ fly -t <FLY_TARGET> trigger-job -j <PIPELINE_NAME>/<JOB_NAME>
 > * Follow `Play and Test` if you are exploring rather than upgrading the prod deployment pipeline.
 > * This Concourse instance is internal: access to the web UI and to `port-forward` is limited to Google. `fly` needs the `port-forward` below.
 
-The deployment pipeline `cfbosh-deployment` running in the Concourse cluster `cfbosh-concourse-ci` is configured and triggered automatically by Stage 3 of the **`CFBOSH GDC release pipeline`** (`.github/workflows/release-pipeline.yaml`) via `ci/run-pipeline.sh --type prod` without developers' manual intervention. However, there are situations when maintainers need to monitor the deployment pipeline health and investigate deployment failures directly.
+The deployment pipeline `cfbosh-deployment` running in the Concourse cluster `cfbosh-concourse-ci` is configured and triggered automatically by Stage 3 of the **`CFBOSH GDC CPI Release pipeline`** (`.github/workflows/release-pipeline.yaml`) via `ci/run-pipeline.sh --type prod` without developers' manual intervention. However, there are situations when maintainers need to monitor the deployment pipeline health and investigate deployment failures directly.
 
 In case maintainers need to connect to the prod deployment pipeline, follow the steps below:
 

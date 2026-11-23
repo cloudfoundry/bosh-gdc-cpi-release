@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 # Update dashboard/data/runs.json and generate GitHub Actions Step Summary
-# for the CFBOSH GDC release pipeline.
+# for the CFBOSH GDC CPI Release pipeline.
 
 set -euo pipefail
 
