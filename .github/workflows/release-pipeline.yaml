@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-name: CFBOSH GDC release pipeline
+name: CFBOSH GDC CPI Release pipeline
 
 on:
   schedule:

@@ -173,9 +173,9 @@ Pull requests targeting `main` automatically run:
 
 ## Release Pipeline, Artifacts & CI/CD Dashboard
 
-### CFBOSH GDC Release Pipeline (`.github/workflows/release-pipeline.yaml`)
+### CFBOSH GDC CPI Release Pipeline (`.github/workflows/release-pipeline.yaml`)
 
-The **`CFBOSH GDC release pipeline`** automates end-to-end BOSH CPI release packaging, Concourse deployment verification, vulnerability scanning, and SemVer release publishing.
+The **`CFBOSH GDC CPI Release pipeline`** automates end-to-end BOSH CPI release packaging, Concourse deployment verification, vulnerability scanning, and SemVer release publishing.
 
 - **Execution Modes (`snapshot` vs `release`)**:
   - **`snapshot` mode (`vX.Y.Z-dev.<sha>`)**: Builds the candidate CPI tarball, runs `govulncheck`, uploads candidate artifacts to the internal CI/CD GCS bucket (`gs://cfbosh-cicd/cpi_releases/`), and runs the Concourse deployment pipeline on GKE. **Does not create a GitHub Release, git tag, or `bosh.io` final-release metadata.** The pipeline only runs merged code on `main`: there are no Pull Request triggers, and `workflow_dispatch` from any other branch fails. `scripts/release-cpi.sh` independently refuses `--mode release` unless the commit is on `main` (or the matching `release/X.Y` branch), verified by Git ancestry.
@@ -186,7 +186,7 @@ The **`CFBOSH GDC release pipeline`** automates end-to-end BOSH CPI release pack
      - **Nightly Snapshot Qualification (`0 8 * * 1-4`)**: Runs automatically Monday through Thursday at `12:00 AM PST` (`08:00 UTC`) in `snapshot` mode on `main`. Automatically skips when the date is the `1st` or `15th` of the month so it never runs in parallel or twice on biweekly release days.
      - **Biweekly Official Release (`0 8 1,15 * *`)**: Runs automatically on the 1st and 15th of each month at `12:00 AM PST` (`08:00 UTC`) in `release` mode on `main` (biweekly release cadence).
   2. **Manual Trigger from GitHub Actions UI (`workflow_dispatch`)**:
-     - Navigate to [**Actions &rarr; CFBOSH GDC release pipeline &rarr; Run workflow**](https://github.com/cloudfoundry/bosh-gdc-cpi-release/actions/workflows/release-pipeline.yaml) and configure the following inputs:
+     - Navigate to [**Actions &rarr; CFBOSH GDC CPI Release pipeline &rarr; Run workflow**](https://github.com/cloudfoundry/bosh-gdc-cpi-release/actions/workflows/release-pipeline.yaml) and configure the following inputs:
        | Input | Options / Type | Default | Description |
        | :--- | :--- | :--- | :--- |
        | `release_mode` | `snapshot` \| `release` | `snapshot` | Execution mode (`snapshot` for internal GCS/Concourse validation; `release` for official SemVer GitHub & `bosh.io` release on `main`). Must be run from `main`. |
@@ -251,7 +251,7 @@ The release versioning and artifact verification architecture follows [Semantic 
 
 ### Artifacts Produced by the Release Pipeline
 
-Each run of the `CFBOSH GDC release pipeline` produces and verifies the following CPI release artifacts, and validates them in Concourse against the latest official GDC Ubuntu Noble stemcell (`bosh-stemcell-<version>-gdch-kvm-ubuntu-noble.tgz`, git tag `ubuntu-noble/v<version>`) published on [`bosh.io`](https://bosh.io/stemcells/bosh-gdch-kvm-ubuntu-noble) (`gs://bosh-core-stemcells/<version>/`) from [`cloudfoundry/bosh-linux-stemcell-builder`](https://github.com/cloudfoundry/bosh-linux-stemcell-builder) (`ubuntu-noble` branch):
+Each run of the `CFBOSH GDC CPI Release pipeline` produces and verifies the following CPI release artifacts, and validates them in Concourse against the latest official GDC Ubuntu Noble stemcell (`bosh-stemcell-<version>-gdch-kvm-ubuntu-noble.tgz`, git tag `ubuntu-noble/v<version>`) published on [`bosh.io`](https://bosh.io/stemcells/bosh-gdch-kvm-ubuntu-noble) (`gs://bosh-core-stemcells/<version>/`) from [`cloudfoundry/bosh-linux-stemcell-builder`](https://github.com/cloudfoundry/bosh-linux-stemcell-builder) (`ubuntu-noble` branch):
 
 | Artifact | Location / Destination | Description |
 | :--- | :--- | :--- |
@@ -330,7 +330,7 @@ gh api --method POST repos/cloudfoundry/bosh-gdc-cpi-release/releases/generate-n
 
 ### Release Pipeline CI/CD Dashboard
 
-The execution history, stage breakdown, and live status of all `CFBOSH GDC release pipeline` runs can be viewed on the **CFBOSH GDC CPI Release Dashboard**:
+The execution history, stage breakdown, and live status of all `CFBOSH GDC CPI Release pipeline` runs can be viewed on the **CFBOSH GDC CPI Release Dashboard**:
 
 - **Dashboard URL**: **[https://cloudfoundry.github.io/bosh-gdc-cpi-release/](https://cloudfoundry.github.io/bosh-gdc-cpi-release/)**
 - **Features**:
