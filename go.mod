@@ -20,7 +20,7 @@ require (
 	github.com/prometheus/common v0.65.0 // indirect
 	github.com/spf13/pflag v1.0.7 // indirect
 	golang.org/x/crypto v0.59.0 // indirect
-	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/net v0.63.0 // indirect
 	golang.org/x/oauth2 v0.38.0
 	golang.org/x/term v0.48.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
@@ -41,7 +41,7 @@ require (
 
 require (
 	github.com/cloudfoundry/bosh-cpi-go v0.0.0-20260221100037-8b66e1def6f1
-	github.com/cloudfoundry/bosh-utils v0.0.676
+	github.com/cloudfoundry/bosh-utils v0.0.678
 	github.com/googlecloudplatform/google-distributed-cloud-apis v0.0.0-20260824201624-0c18fa0ddc04
 	golang.org/x/exp v0.0.0-20250718183923-645b1fa84792
 	sigs.k8s.io/cluster-api v1.10.2
